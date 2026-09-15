@@ -1,0 +1,41 @@
+# CinaRip Freezer encode worker — run on a PC, not the NAS.
+# Freezer/ is created inside the container at startup. CIFS needs SYS_ADMIN.
+#
+# Windows PowerShell:
+#   $env:CINARIP_VIDEOS="T:\Videos"
+#   docker compose up --build
+#
+# NAS CinaRip HTTP default: https://cinarip.matthewsuess.com
+# NAS share default: //100.95.66.124/Public  + Videos (LAN / owner Tailscale)
+services:
+  freezer-worker:
+    build: .
+    image: cinarip-freezer-worker
+    container_name: cinarip-freezer-worker
+    restart: unless-stopped
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    security_opt:
+      - apparmor:unconfined
+    ports:
+      - "8791:8791"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PORT: "8791"
+      VIDEO_ROOT: /videos
+      CONFIG_ROOT: /config
+      NAS_MOUNT_POINT: /mnt/nas
+      FFMPEG_THREADS: "2"
+      FFMPEG_CRF: "24"
+      SCAN_MS: "4000"
+      NAS_ORIGIN: ${NAS_ORIGIN:-https://cinarip.matthewsuess.com}
+      NAS_STATUS_URL: ${NAS_STATUS_URL:-https://cinarip.matthewsuess.com/api/freezer/status}
+    volumes:
+      - ${CINARIP_VIDEOS:-./videos}:/videos:rw
+      - freezer-worker-config:/config:rw
+
+volumes:
+  freezer-worker-config:

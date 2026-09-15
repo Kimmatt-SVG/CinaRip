@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CinaRip Freezer Worker</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <strong>Freezer Worker</strong>
+        <p id="status">Idle — encoding does not start until you press a button.</p>
+      </div>
+    </header>
+
+    <section class="status-strip" aria-live="polite">
+      <div class="status-cell">
+        <span class="status-label">Videos / Freezer</span>
+        <strong id="mount-state" class="pill disconnected">Disconnected</strong>
+        <span id="mount-detail" class="muted">Checking mount…</span>
+      </div>
+      <div class="status-cell">
+        <span class="status-label">NAS</span>
+        <strong id="nas-state" class="pill disconnected">Disconnected</strong>
+        <span id="nas-detail" class="muted">Connecting to CinaRip…</span>
+      </div>
+      <div class="status-cell rates">
+        <span class="status-label">Download</span>
+        <strong id="download-speed">—</strong>
+      </div>
+      <div class="status-cell rates">
+        <span class="status-label">Upload</span>
+        <strong id="upload-speed">—</strong>
+      </div>
+    </section>
+
+    <div class="ops">
+      <button id="start-freezer" type="button" class="ghost primary">Start Freezer</button>
+      <button id="cool-down" type="button" class="ghost">Cool Down</button>
+    </div>
+    <p class="muted hint">
+      Start Freezer begins the pending queue. Cool Down runs the encode pass.
+      <code>Freezer/</code> is created at container start. Docker needs write access to Videos
+      (NAS share credentials or Docker Desktop file sharing).
+    </p>
+
+    <form id="nas-form" class="nas-card">
+      <h2>NAS login</h2>
+      <p class="muted">CinaRip HTTP and the Videos SMB share. Password is saved in the container, not logged.</p>
+      <label for="nas-origin">CinaRip URL</label>
+      <input id="nas-origin" type="text" spellcheck="false" autocomplete="off" placeholder="https://cinarip.matthewsuess.com" />
+      <label for="nas-host">Host</label>
+      <input id="nas-host" type="text" spellcheck="false" autocomplete="off" placeholder="100.95.66.124" />
+      <label for="nas-share">Share</label>
+      <input id="nas-share" type="text" spellcheck="false" autocomplete="off" placeholder="Public" />
+      <label for="nas-videos">Videos path</label>
+      <input id="nas-videos" type="text" spellcheck="false" autocomplete="off" placeholder="Videos" />
+      <label for="nas-username">Username</label>
+      <input id="nas-username" type="text" spellcheck="false" autocomplete="username" placeholder="Matthew" />
+      <label for="nas-password">Password</label>
+      <input id="nas-password" type="password" autocomplete="current-password" placeholder="NAS password" />
+      <button type="submit" class="ghost primary">Save / Connect</button>
+    </form>
+
+    <section class="queue-card">
+      <h2>Needs to be frozen</h2>
+      <ul id="pending-queue" class="queue-list">
+        <li class="empty">Nothing waiting.</li>
+      </ul>
+    </section>
+
+    <section class="queue-card">
+      <h2>Cooling down</h2>
+      <ul id="cooling-queue" class="queue-list">
+        <li class="empty">Nothing encoding.</li>
+      </ul>
+    </section>
+
+    <p id="failed-note" class="failed-note" hidden></p>
+
+    <section>
+      <h2>In Freezer</h2>
+      <div id="catalog" class="library"></div>
+    </section>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
