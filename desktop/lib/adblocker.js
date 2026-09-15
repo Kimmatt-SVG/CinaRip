@@ -7,6 +7,15 @@ const { ElectronBlocker } = require("@ghostery/adblocker-electron");
 let blocker = null;
 let adblockerSession = null;
 
+const ALLOWLIST_FILTERS = [
+  "@@||loadshare.org^$important",
+  "@@||loadshare.org^",
+  "@@||tornadomovies.co^$important",
+  "@@||tornadomovies.co^",
+  "@@||aniwaves.ru^$important",
+  "@@||aniwaves.ru^"
+];
+
 function cachePath() {
   return path.join(app.getPath("userData"), "adblocker-engine.bin");
 }
@@ -22,13 +31,18 @@ async function setupAdblocker(session) {
     write: fs.promises.writeFile.bind(fs.promises)
   });
 
+  // Cosmetic scriptlets/CSS injection into BrowserView has been crashing Electron
+  // on Windows (0xC0000005). Keep network blocking only.
+  if (blocker.config) {
+    blocker.config.loadCosmeticFilters = false;
+    blocker.config.enableMutationObserver = false;
+  }
+
   adblockerSession = session;
   blocker.enableBlockingInSession(session);
 
   if (typeof blocker.updateFromDiff === "function") {
-    blocker.updateFromDiff({
-      added: ["@@||loadshare.org^$important", "@@||loadshare.org^"]
-    });
+    blocker.updateFromDiff({ added: ALLOWLIST_FILTERS });
   }
 
   return blocker;
@@ -37,25 +51,16 @@ async function setupAdblocker(session) {
 function setAdblockerEnabled(session, enabled) {
   if (!blocker || !session) return;
 
-  const currentlyEnabled = blocker.isBlockingEnabled(session);
-  if (enabled === currentlyEnabled) return;
-
-  if (enabled) {
+  // Never disable after enable: Ghostery's disable() unregisters IPC handlers and
+  // clears session webRequest listeners, which crashes pages still using the preload.
+  if (!enabled) return;
+  if (!blocker.isBlockingEnabled(session)) {
     blocker.enableBlockingInSession(session);
-  } else if (currentlyEnabled) {
-    blocker.disableBlockingInSession(session);
   }
 }
 
-function syncAdblockerForUrl(url) {
-  if (!adblockerSession) return;
-  const text = String(url || "");
-  const allowUnblocked =
-    /tornadomovies\.co/i.test(text) ||
-    /loadshare\.org\/download\//i.test(text) ||
-    /aniwaves\.ru/i.test(text) ||
-    /vidplay\.|megacloud\.|rabbitstream\.|streamwish\.|mp4upload\.|echovideo\.|gn1r5n\.|myvidplay\./i.test(text);
-  setAdblockerEnabled(adblockerSession, !allowUnblocked);
+function syncAdblockerForUrl() {
+  // Keep blocking enabled for the whole session. Site/CDN exceptions are allowlisted.
 }
 
 function isAdblockerEnabled(session) {

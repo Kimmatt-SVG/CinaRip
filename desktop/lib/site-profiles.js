@@ -79,14 +79,14 @@ function createAnimeProfile() {
       searchPlaceholder: "Search anime (e.g. sao, attack on titan)",
       landingTitle: "What anime do you want to watch?",
       landingLead:
-        "Search Aniwave or open a series page in the browser, then scan and download episodes from the sidebar.",
+        "Search a title, or browse Aniwave, scan a series, then queue episodes to your PC or NAS.",
       openAnimeButton: false,
       hideMovieDownloader: true,
       defaultSidebarMode: "tv",
       tvShowLead:
-        "Open an Aniwave series page (e.g. /watch/show-name/ep-1), scan episodes, then download each one. English dub is tried first when available.",
+        "Open a series page, scan episodes, then add them to the queue. English dub is tried first when available.",
       startupLog:
-        "Anime mode ready. Open an Aniwave series page, scan it, then download episodes (dub preferred)."
+        "Anime mode ready. Search or browse Aniwave, scan a series, then queue episodes (dub preferred)."
     },
     overrides
   );

@@ -123,7 +123,7 @@ function parseEpisodeMeta(filePath, rootFolder) {
       showTitle = parts[seasonIdx - 1];
       showFolder = path.join(rootFolder, ...parts.slice(0, seasonIdx));
       season = Number.parseInt(parts[seasonIdx].match(SEASON_FOLDER_PATTERN)[1], 10) || season;
-    } else if (episodeMatch && parts.length >= 2) {
+    } else if (episodeMatch && parts.length >= 2 && !/^freezer$/i.test(parts[parts.length - 2])) {
       // e.g. Videos/Breaking Bad/S03E01....mp4
       showTitle = parts[parts.length - 2];
       showFolder = path.join(rootFolder, ...parts.slice(0, -1));
@@ -150,18 +150,25 @@ function parseEpisodeMeta(filePath, rootFolder) {
   };
 }
 
+function isFrozenLibraryPath(filePath, rootFolder) {
+  const rel = path.relative(rootFolder, filePath);
+  const parts = String(rel || "").split(/[/\\]/).filter(Boolean);
+  return /^freezer$/i.test(parts[0] || "");
+}
+
 function groupLibraryEntries(rawMovies, rootFolder) {
   const shows = new Map();
   const movies = [];
 
   for (const item of rawMovies) {
     const tv = parseEpisodeMeta(item.filePath, rootFolder);
+    const frozen = isFrozenLibraryPath(item.filePath, rootFolder);
     if (!tv) {
-      movies.push({ ...item, kind: "movie" });
+      movies.push({ ...item, kind: "movie", frozen });
       continue;
     }
 
-    const key = tv.showTitle.toLowerCase();
+    const key = `${frozen ? "frozen:" : ""}${tv.showTitle.toLowerCase()}`;
     let show = shows.get(key);
     if (!show) {
       show = {
@@ -169,6 +176,7 @@ function groupLibraryEntries(rawMovies, rootFolder) {
         id: `show-${key.replace(/[^a-z0-9]+/g, "-")}`,
         title: tv.showTitle,
         showTitle: tv.showTitle,
+        frozen,
         folderPath: tv.showFolder || path.dirname(item.filePath),
         filePath: tv.showFolder || path.dirname(item.filePath),
         seasons: new Set(),
@@ -215,6 +223,7 @@ function groupLibraryEntries(rawMovies, rootFolder) {
       id: show.id,
       title: show.title,
       showTitle: show.showTitle,
+      frozen: Boolean(show.frozen),
       folderPath: show.folderPath,
       filePath: show.filePath,
       episodeCount: show.episodes.length,
@@ -234,7 +243,7 @@ function groupLibraryEntries(rawMovies, rootFolder) {
 }
 
 function scanMoviesFolder(folderPath, location, options = {}) {
-  const maxDepth = Number.isInteger(options.maxDepth) ? options.maxDepth : 4;
+  const maxDepth = Number.isInteger(options.maxDepth) ? options.maxDepth : 5;
 
   if (!folderPath) {
     return {
@@ -373,5 +382,6 @@ module.exports = {
   posterUrlForPath,
   findShowPoster,
   groupLibraryEntries,
-  parseEpisodeMeta
+  parseEpisodeMeta,
+  isFrozenLibraryPath
 };

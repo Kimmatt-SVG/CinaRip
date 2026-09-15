@@ -1,4 +1,4 @@
-const { isAniwaveUrl, scrapeAniwaveTvShowFromPage, setupAniwaveScraper } = require("./aniwave-scraper");
+const { isAniwaveUrl, isAniwaveHost, scrapeAniwaveTvShowFromPage, setupAniwaveScraper } = require("./aniwave-scraper");
 
 function buildTvShowScraperScript() {
   return `
@@ -622,7 +622,7 @@ async function scrapeTvShowFromPage(contents, options = {}) {
   }
 
   const pageUrl = contents.getURL() || "";
-  if (isAniwaveUrl(pageUrl)) {
+  if (isAniwaveHost(pageUrl) || isAniwaveUrl(pageUrl)) {
     return scrapeAniwaveTvShowFromPage(contents);
   }
 
@@ -663,7 +663,7 @@ async function discoverTvSeasonsFromPage(contents) {
   }
 
   const pageUrl = contents.getURL() || "";
-  if (isAniwaveUrl(pageUrl)) {
+  if (isAniwaveHost(pageUrl) || isAniwaveUrl(pageUrl)) {
     return { ok: true, seasons: [{ number: 1, label: "Season 1", url: pageUrl }], seasonCount: 1 };
   }
 

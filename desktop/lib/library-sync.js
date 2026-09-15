@@ -11,13 +11,30 @@ const VIDEO_EXTENSIONS = new Set([".mp4", ".mkv", ".mov", ".m4v", ".webm", ".ts"
 const PROGRESS_THROTTLE_MS = 250;
 
 function isVideoFileName(name) {
-  return VIDEO_EXTENSIONS.has(path.extname(name).toLowerCase());
+  return VIDEO_EXTENSIONS.has(path.extname(String(name || "")).toLowerCase());
 }
 
-function fileExistsOnNas(nasDir, fileName) {
-  const target = path.join(nasDir, fileName);
+function isPathInside(parentDir, childPath) {
+  const parent = path.resolve(parentDir);
+  const child = path.resolve(childPath);
+  const rel = path.relative(parent, child);
+  return Boolean(rel) && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function destPathForLocalFile(localDir, nasDir, src) {
+  const rel = path.relative(localDir, src);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
+    return path.join(nasDir, path.basename(src));
+  }
+  return path.join(nasDir, rel);
+}
+
+function nasFileComplete(src, dest) {
   try {
-    return fs.existsSync(target) && fs.statSync(target).isFile();
+    if (!fs.existsSync(dest)) return false;
+    const srcStat = fs.statSync(src);
+    const destStat = fs.statSync(dest);
+    return destStat.isFile() && destStat.size > 0 && destStat.size >= srcStat.size;
   } catch {
     return false;
   }
@@ -29,44 +46,94 @@ function relatedFilesForVideo(videoPath) {
     if (!files.includes(poster)) files.push(poster);
   }
 
+  const logPath = `${videoPath}.log`;
+  try {
+    if (fs.existsSync(logPath) && fs.statSync(logPath).isFile() && !files.includes(logPath)) {
+      files.push(logPath);
+    }
+  } catch {
+    // Ignore missing sidecar logs.
+  }
+
   return files;
 }
 
-function buildSyncTasks(movies, nasDir) {
-  const tasks = [];
-  let skippedMovies = 0;
+function videoEntriesFromLibrary(entries) {
+  const videos = [];
 
-  for (const movie of movies) {
-    const related = relatedFilesForVideo(movie.filePath);
-    const pending = related.filter((src) => !fileExistsOnNas(nasDir, path.basename(src)));
-
-    if (!pending.length) {
-      skippedMovies += 1;
+  for (const entry of entries || []) {
+    if (entry?.kind === "tv-show") {
+      for (const episode of entry.episodes || []) {
+        if (episode?.filePath && isVideoFileName(episode.fileName || episode.filePath)) {
+          videos.push(episode);
+        }
+      }
       continue;
     }
 
-    for (const src of pending) {
+    if (entry?.filePath && isVideoFileName(entry.fileName || entry.filePath)) {
+      videos.push(entry);
+    }
+  }
+
+  return videos;
+}
+
+function buildSyncTasks(movies, localDir, nasDir) {
+  const tasks = [];
+  let skippedVideos = 0;
+
+  for (const movie of videoEntriesFromLibrary(movies)) {
+    const related = relatedFilesForVideo(movie.filePath);
+    let pendingForVideo = 0;
+
+    for (const src of related) {
       let size = 0;
       try {
-        size = fs.statSync(src).size;
+        const stat = fs.statSync(src);
+        if (!stat.isFile()) continue;
+        size = stat.size;
       } catch {
         continue;
       }
 
+      const dest = destPathForLocalFile(localDir, nasDir, src);
+      const alreadyOnNas = nasFileComplete(src, dest);
+      if (alreadyOnNas) {
+        tasks.push({
+          src,
+          dest,
+          fileName: path.basename(src),
+          movieFileName: movie.fileName || path.basename(movie.filePath),
+          size,
+          skipCopy: true,
+          isVideo: isVideoFileName(src)
+        });
+        continue;
+      }
+
+      pendingForVideo += 1;
       tasks.push({
         src,
-        dest: path.join(nasDir, path.basename(src)),
+        dest,
         fileName: path.basename(src),
-        movieFileName: movie.fileName,
-        size
+        movieFileName: movie.fileName || path.basename(movie.filePath),
+        size,
+        skipCopy: false,
+        isVideo: isVideoFileName(src)
       });
+    }
+
+    if (!pendingForVideo && related.some((src) => isVideoFileName(src))) {
+      skippedVideos += 1;
     }
   }
 
+  const copyTasks = tasks.filter((task) => !task.skipCopy);
   return {
     tasks,
-    skippedMovies,
-    totalBytes: tasks.reduce((sum, task) => sum + task.size, 0)
+    skippedVideos,
+    totalBytes: copyTasks.reduce((sum, task) => sum + task.size, 0)
   };
 }
 
@@ -130,7 +197,12 @@ async function getResumeState(src, dest, totalBytes) {
 
 async function copyFileWithProgress(src, dest, onChunk, shouldContinue = () => true) {
   const stat = await fs.promises.stat(src);
+  if (!stat.isFile()) {
+    throw new Error(`Cannot copy "${src}" because it is not a file.`);
+  }
+
   const totalBytes = stat.size;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
   const resume = await getResumeState(src, dest, totalBytes);
 
   if (resume.complete) {
@@ -173,13 +245,46 @@ async function copyFileWithProgress(src, dest, onChunk, shouldContinue = () => t
   return totalBytes;
 }
 
+function deleteLocalFile(filePath, localDir) {
+  try {
+    if (!isPathInside(localDir, filePath)) return false;
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeEmptyParents(startDir, stopDir) {
+  let current = path.resolve(startDir);
+  const root = path.resolve(stopDir);
+
+  for (let i = 0; i < 12; i++) {
+    if (!current || current === root || !isPathInside(root, current)) break;
+    let names;
+    try {
+      names = fs.readdirSync(current);
+    } catch {
+      break;
+    }
+    if (names.length) break;
+    try {
+      fs.rmdirSync(current);
+    } catch {
+      break;
+    }
+    current = path.dirname(current);
+  }
+}
+
 function createProgressEmitter(onProgress, shouldContinue = () => true) {
   let lastEmit = 0;
 
   return (payload) => {
     if (!shouldContinue()) return;
     const now = Date.now();
-    const force = payload.phase === "preparing" || payload.phase === "complete";
+    const force =
+      payload.phase === "preparing" || payload.phase === "complete" || payload.phase === "removing";
     if (!force && now - lastEmit < PROGRESS_THROTTLE_MS) {
       return;
     }
@@ -210,15 +315,17 @@ async function syncLocalMoviesToNas(localDir, nasDir, onProgress, options = {}) 
 
   const emitProgress = createProgressEmitter(onProgress, shouldContinue);
   const movies = local.movies;
+  const videoCount = videoEntriesFromLibrary(movies).length;
 
   emitProgress({
     phase: "preparing",
     fileName: null,
     index: 0,
-    total: movies.length,
+    total: videoCount,
     copied: 0,
     skipped: 0,
     failed: 0,
+    removed: 0,
     fileBytes: 0,
     fileTotalBytes: 0,
     overallBytes: 0,
@@ -226,91 +333,95 @@ async function syncLocalMoviesToNas(localDir, nasDir, onProgress, options = {}) 
     overallPercent: null
   });
 
-  const { tasks, skippedMovies, totalBytes } = buildSyncTasks(movies, nasDir);
+  const { tasks, skippedVideos, totalBytes } = buildSyncTasks(movies, localDir, nasDir);
   let overallBytes = 0;
-  const copiedMovies = new Set();
+  const copiedVideos = new Set();
+  const removedVideos = new Set();
   let failed = 0;
+  let removed = 0;
   const errors = [];
+  const localDirsToClean = new Set();
 
-  if (!tasks.length) {
+  const emitCopyProgress = (overrides = {}) => {
     emitProgress({
-      phase: "complete",
-      fileName: null,
-      index: movies.length,
-      total: movies.length,
-      copied: 0,
-      skipped: skippedMovies,
-      failed: 0,
-      fileBytes: 0,
-      fileTotalBytes: 0,
-      overallBytes: 0,
-      overallTotalBytes: 0,
-      overallPercent: 100
+      phase: "copying",
+      copied: copiedVideos.size,
+      skipped: skippedVideos,
+      failed,
+      removed,
+      overallBytes,
+      overallTotalBytes: totalBytes,
+      overallPercent:
+        totalBytes > 0 ? Math.min(99, Math.round((overallBytes / totalBytes) * 100)) : null,
+      ...overrides
     });
-
-    return {
-      ok: true,
-      copied: 0,
-      skipped: skippedMovies,
-      failed: 0,
-      total: movies.length,
-      errors: []
-    };
-  }
+  };
 
   for (let index = 0; index < tasks.length; index += 1) {
     if (!shouldContinue()) break;
 
     const task = tasks[index];
-
-    emitProgress({
-      phase: "copying",
+    emitCopyProgress({
       fileName: task.fileName,
       movieFileName: task.movieFileName,
       index: index + 1,
       total: tasks.length,
-      copied: copiedMovies.size,
-      skipped: skippedMovies,
-      failed,
-      fileBytes: 0,
-      fileTotalBytes: task.size,
-      overallBytes,
-      overallTotalBytes: totalBytes,
-      overallPercent:
-        totalBytes > 0 ? Math.min(99, Math.round((overallBytes / totalBytes) * 100)) : null
+      fileBytes: task.skipCopy ? task.size : 0,
+      fileTotalBytes: task.size
     });
 
     try {
-      await copyFileWithProgress(
-        task.src,
-        task.dest,
-        ({ copiedBytes, totalBytes: fileTotal }) => {
-          const currentOverall = overallBytes + copiedBytes;
-          emitProgress({
-            phase: "copying",
-            fileName: task.fileName,
-            movieFileName: task.movieFileName,
-            index: index + 1,
-            total: tasks.length,
-            copied: copiedMovies.size,
-            skipped: skippedMovies,
-            failed,
-            fileBytes: copiedBytes,
-            fileTotalBytes: fileTotal,
-            overallBytes: currentOverall,
-            overallTotalBytes: totalBytes,
-            overallPercent:
-              totalBytes > 0
-                ? Math.min(99, Math.round((currentOverall / totalBytes) * 100))
-                : null
-          });
-        },
-        shouldContinue
-      );
+      if (!task.skipCopy) {
+        await copyFileWithProgress(
+          task.src,
+          task.dest,
+          ({ copiedBytes, totalBytes: fileTotal }) => {
+            emitCopyProgress({
+              fileName: task.fileName,
+              movieFileName: task.movieFileName,
+              index: index + 1,
+              total: tasks.length,
+              fileBytes: copiedBytes,
+              fileTotalBytes: fileTotal,
+              overallBytes: overallBytes + copiedBytes,
+              overallPercent:
+                totalBytes > 0
+                  ? Math.min(99, Math.round(((overallBytes + copiedBytes) / totalBytes) * 100))
+                  : null
+            });
+          },
+          shouldContinue
+        );
+        overallBytes += task.size;
+        if (task.isVideo) copiedVideos.add(task.movieFileName);
+      }
 
-      overallBytes += task.size;
-      if (isVideoFileName(task.fileName)) {
-        copiedMovies.add(task.movieFileName);
+      if (!nasFileComplete(task.src, task.dest)) {
+        throw new Error("NAS copy could not be verified.");
+      }
+
+      emitProgress({
+        phase: "removing",
+        fileName: task.fileName,
+        movieFileName: task.movieFileName,
+        index: index + 1,
+        total: tasks.length,
+        copied: copiedVideos.size,
+        skipped: skippedVideos,
+        failed,
+        removed,
+        fileBytes: task.size,
+        fileTotalBytes: task.size,
+        overallBytes,
+        overallTotalBytes: totalBytes,
+        overallPercent:
+          totalBytes > 0 ? Math.min(99, Math.round((overallBytes / totalBytes) * 100)) : 100
+      });
+
+      if (deleteLocalFile(task.src, localDir)) {
+        removed += 1;
+        localDirsToClean.add(path.dirname(task.src));
+        if (task.isVideo) removedVideos.add(task.movieFileName);
       }
     } catch (error) {
       if (error?.message === "Copy cancelled") {
@@ -324,7 +435,11 @@ async function syncLocalMoviesToNas(localDir, nasDir, onProgress, options = {}) 
     }
   }
 
-  const copied = copiedMovies.size;
+  for (const dir of localDirsToClean) {
+    removeEmptyParents(dir, localDir);
+  }
+
+  const copied = copiedVideos.size;
 
   emitProgress({
     phase: "complete",
@@ -332,8 +447,9 @@ async function syncLocalMoviesToNas(localDir, nasDir, onProgress, options = {}) 
     index: tasks.length,
     total: tasks.length,
     copied,
-    skipped: skippedMovies,
+    skipped: skippedVideos,
     failed,
+    removed: removedVideos.size,
     fileBytes: 0,
     fileTotalBytes: 0,
     overallBytes,
@@ -344,9 +460,10 @@ async function syncLocalMoviesToNas(localDir, nasDir, onProgress, options = {}) 
   return {
     ok: true,
     copied,
-    skipped: skippedMovies,
+    skipped: skippedVideos,
     failed,
-    total: movies.length,
+    removed: removedVideos.size,
+    total: videoCount,
     errors
   };
 }

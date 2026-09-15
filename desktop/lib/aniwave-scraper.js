@@ -12,6 +12,14 @@ function isAniwaveUrl(url) {
   }
 }
 
+function isAniwaveHost(url) {
+  try {
+    return ANIWAVE_HOST_PATTERN.test(new URL(String(url || "")).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function buildAniwaveTvShowScraperScript() {
   return `
 (() => {
@@ -57,9 +65,19 @@ function buildAniwaveTvShowScraperScript() {
 
   const parseEpisodeTotal = () => {
     const text = document.body?.innerText || "";
-    const match = text.match(/Episodes:\\s*(\\d+)\\s*\\/\\s*(\\d+)/i);
-    if (match?.[2]) return Number.parseInt(match[2], 10) || 0;
-    if (match?.[1]) return Number.parseInt(match[1], 10) || 0;
+    const patterns = [
+      /Episodes:\\s*(\\d+)\\s*\\/\\s*(\\d+)/i,
+      /Episodes:\\s*(\\d+)/i,
+      /(\\d+)\\s+Episodes/i,
+      /EPS:\\s*(\\d+)/i
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const total = Number.parseInt(match[2] || match[1], 10) || 0;
+        if (total > 0 && total < 5000) return total;
+      }
+    }
     return 0;
   };
 
@@ -67,15 +85,23 @@ function buildAniwaveTvShowScraperScript() {
     const found = new Map();
     const selectors = [
       "a[href*='/ep-']",
+      "a[href*='/watch/']",
       ".episodes a",
       ".episodes button",
       ".ep-list a",
       ".ep-item",
       ".ssl-item",
+      "#episodes-content a",
+      "#episodes a",
+      ".range-wrap a",
+      ".ep-range a",
       "[class*='episode'] a",
       "[class*='ep-list'] a",
       "[data-number]",
-      "[data-ep]"
+      "[data-ep]",
+      "[data-id].ssl-item",
+      "ul.episodes li a",
+      "div.episodes a"
     ];
 
     for (const selector of selectors) {
@@ -133,12 +159,31 @@ function buildAniwaveTvShowScraperScript() {
     const origin = window.location.origin;
     const linkedEpisodes = collectEpisodeLinks(showSlug, origin);
     const totalEpisodes = parseEpisodeTotal();
-    const episodes =
+    const currentEp = parseEpisodeNumber(pathname, "");
+    let episodes =
       linkedEpisodes.length >= 2
         ? linkedEpisodes
         : totalEpisodes > 0
           ? buildEpisodeListFromTotal(showSlug, origin, totalEpisodes)
           : linkedEpisodes;
+
+    if (!episodes.length && currentEp) {
+      episodes = [{
+        url: pageUrl,
+        title: "Episode " + currentEp,
+        season: 1,
+        episode: currentEp
+      }];
+    }
+
+    if (!episodes.length) {
+      episodes = [{
+        url: normalize(origin + "/watch/" + showSlug + "/ep-1"),
+        title: "Episode 1",
+        season: 1,
+        episode: 1
+      }];
+    }
 
     return {
       ok: episodes.length > 0,
@@ -417,7 +462,12 @@ async function scrapeAniwaveTvShowFromPage(contents) {
   await contents.executeJavaScript(buildAniwaveTvShowScraperScript()).catch(() => {});
 
   try {
-    return await contents.executeJavaScript("window.__aniwaveScanTvShow?.() || { ok: false }");
+    let result = await contents.executeJavaScript("window.__aniwaveScanTvShow?.() || { ok: false }");
+    if (!result?.ok || !result?.episodes?.length) {
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+      result = await contents.executeJavaScript("window.__aniwaveScanTvShow?.() || { ok: false }");
+    }
+    return result;
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
@@ -524,6 +574,7 @@ module.exports = {
   ANIWAVE_WATCH_PATTERN,
   SERVER_PRIORITY,
   isAniwaveUrl,
+  isAniwaveHost,
   buildAniwaveTvShowScraperScript,
   buildAniwavePlayerScript,
   buildAniwaveWaitForServersScript,

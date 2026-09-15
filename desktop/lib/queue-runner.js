@@ -1,9 +1,33 @@
 const PAGE_LOAD_TIMEOUT_MS = 90_000;
+const FRESH_LINK_TIMEOUT_MS = 22_000;
 const JOB_WAIT_TIMEOUT_MS = 8 * 60 * 60 * 1000;
 const JOB_POLL_MS = 500;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function fetchLinkWithTimeout(deps, item) {
+  try {
+    const result = await withTimeout(
+      deps.fetchFreshLink?.(item),
+      FRESH_LINK_TIMEOUT_MS,
+      "Fresh link timed out."
+    );
+    return result || { ok: false, error: "Could not generate a fresh download link." };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error), timedOut: true };
+  }
 }
 
 async function waitForJobComplete(runner, shouldContinue, timeoutMs = JOB_WAIT_TIMEOUT_MS) {
@@ -118,12 +142,14 @@ async function processQueueItem(item, queue, deps) {
       snapshot: queue.snapshot()
     });
 
-    const link = await deps.fetchFreshLink?.(item);
+    const link = await fetchLinkWithTimeout(deps, item);
     if (!link?.ok) {
-      if (attempt < maxAttempts) {
-        deps.clearJob?.();
-        continue;
-      }
+      deps.onDebug?.("item-link-fail", link?.error || "Fresh link failed", {
+        itemId: item.id,
+        movieUrl: item.movieUrl,
+        attempt,
+        timedOut: Boolean(link?.timedOut)
+      });
       return { failed: link?.error || "Could not generate a fresh download link." };
     }
 
@@ -183,6 +209,43 @@ async function processQueueItem(item, queue, deps) {
   return { failed: "Download failed after multiple attempts." };
 }
 
+async function processPendingItems(queue, deps, results) {
+  while (!queue.cancelRequested) {
+    const item = queue.nextPending();
+    if (!item) break;
+
+    const outcome = await processQueueItem(item, queue, deps);
+
+    if (outcome.cancelled) {
+      results.cancelled = true;
+      queue.markSkipped(item.id, "Cancelled");
+      break;
+    }
+
+    if (outcome.ok) {
+      queue.markDone(item.id);
+      results.completed += 1;
+      results.items.push({ id: item.id, ok: true });
+      deps.onProgress?.({
+        phase: "item-complete",
+        item,
+        snapshot: queue.snapshot()
+      });
+      continue;
+    }
+
+    queue.markFailed(item.id, outcome.failed);
+    results.failed += 1;
+    results.items.push({ id: item.id, ok: false, error: outcome.failed });
+    deps.onProgress?.({
+      phase: "item-failed",
+      item,
+      error: outcome.failed,
+      snapshot: queue.snapshot()
+    });
+  }
+}
+
 async function processDownloadQueue(queue, deps) {
   const begin = queue.beginRun();
   if (!begin.ok) return begin;
@@ -196,33 +259,19 @@ async function processDownloadQueue(queue, deps) {
   };
 
   try {
-    while (!queue.cancelRequested) {
-      const item = queue.nextPending();
-      if (!item) break;
+    await processPendingItems(queue, deps, results);
 
-      const outcome = await processQueueItem(item, queue, deps);
-
-      if (outcome.cancelled) {
-        results.cancelled = true;
-        queue.markSkipped(item.id, "Cancelled");
-        break;
-      }
-
-      if (outcome.ok) {
-        queue.markDone(item.id);
-        results.completed += 1;
-        results.items.push({ id: item.id, ok: true });
+    if (!queue.cancelRequested) {
+      const retried = queue.requeueFailed();
+      if (retried) {
+        results.failed = Math.max(0, results.failed - retried);
         deps.onProgress?.({
-          phase: "item-complete",
-          item,
+          phase: "retry-pass",
+          retried,
           snapshot: queue.snapshot()
         });
-        continue;
+        await processPendingItems(queue, deps, results);
       }
-
-      queue.markFailed(item.id, outcome.failed);
-      results.failed += 1;
-      results.items.push({ id: item.id, ok: false, error: outcome.failed });
     }
   } finally {
     queue.finishRun();
@@ -243,5 +292,7 @@ async function processDownloadQueue(queue, deps) {
 module.exports = {
   processDownloadQueue,
   waitForJobComplete,
-  isRetryableDownloadError
+  isRetryableDownloadError,
+  withTimeout,
+  FRESH_LINK_TIMEOUT_MS
 };

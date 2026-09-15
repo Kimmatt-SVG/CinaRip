@@ -40,13 +40,13 @@
       <div class="actions">
         <div class="nav-group">
           <button id="go-back" type="button" class="nav secondary" title="Back" disabled aria-label="Back">←</button>
+          <button id="go-home" type="button" class="nav secondary" title="Home" hidden aria-label="Home">Home</button>
           <button id="go-forward" type="button" class="nav secondary" title="Forward" disabled aria-label="Forward">→</button>
         </div>
         <button id="reload-site" type="button" class="secondary" title="Reload the current page">Reload Page</button>
         <button id="open-anime-window" type="button" class="secondary" title="Open a separate window for anime">Anime Window</button>
-        <button id="open-folder" type="button" class="secondary">Open Movies Folder</button>
-        <button id="connect-nas" type="button" class="secondary" title="Sign in to NAS share">Connect NAS</button>
-        <button id="connect-site" type="button" class="secondary" title="Save Tornado Movies login">Site Login</button>
+        <button id="open-folder" type="button" class="secondary">Open NAS Folder</button>
+        <button id="open-settings" type="button" class="secondary" title="NAS folder and Tornado Movies login">Settings</button>
         <button id="stop-download" type="button" class="danger" hidden>Stop</button>
       </div>
     </header>
@@ -58,8 +58,20 @@
 
     <section id="search-panel" class="search-panel">
       <div id="catalog-home" class="catalog-home">
+        <div id="anime-hero" class="anime-hero" hidden>
+          <p class="anime-kicker">Aniwave</p>
+          <h1 id="anime-hero-title">What anime do you want to watch?</h1>
+          <p id="anime-hero-lead">Search a title, or browse Aniwave, scan a series, then download episodes to your NAS.</p>
+          <div class="anime-hero-actions">
+            <button id="browse-home" type="button" class="primary browse-home">Browse Aniwave</button>
+          </div>
+          <ol class="anime-steps" aria-label="How to download">
+            <li><span>1</span>Search or browse</li>
+            <li><span>2</span>Scan a series</li>
+            <li><span>3</span>Download to NAS</li>
+          </ol>
+        </div>
         <p id="search-error" class="search-error home-search-error" role="status"></p>
-        <button id="browse-home" type="button" class="secondary browse-home" hidden>Browse Tornado Movies</button>
 
         <div id="home-panels" class="home-panels">
           <section id="download-queue-section" class="home-panel download-queue-section home-queue" aria-label="Download queue">
@@ -86,6 +98,9 @@
                 <button id="browse-site-for-tv" type="button" class="secondary">Browse Site for TV</button>
                 <button id="back-to-catalog" type="button" class="secondary" hidden>Back to Catalog</button>
                 <button id="scan-tv-show" type="button" class="secondary">Scan Season</button>
+                <button id="add-current-episode" type="button" class="secondary" hidden>
+                  Add This Episode
+                </button>
                 <button id="add-tv-to-queue" type="button" class="primary" disabled>Add Scanned Episodes</button>
                 <button id="clear-tv-show-plan" type="button" class="secondary">Clear Scan</button>
               </div>
@@ -96,15 +111,15 @@
             </div>
 
             <div class="queue-run-bar">
-              <button id="start-download-queue-local" type="button" class="primary">Queue → PC</button>
-              <button id="start-download-queue-nas" type="button" class="accent">Queue → NAS</button>
+              <button id="start-download-queue-local" type="button" class="primary" hidden>Queue → PC</button>
+              <button id="start-download-queue-nas" type="button" class="primary">Download</button>
               <button id="stop-download-queue" type="button" class="danger" hidden>Stop Queue</button>
               <button id="clear-download-queue" type="button" class="secondary">Clear Queue</button>
               <button id="queue-debug-copy" type="button" class="secondary" title="Copy queue debug log">Debug</button>
             </div>
 
             <ul id="download-queue-list" class="download-queue-list home-queue-list">
-              <li class="download-queue-empty">One queue for movies and TV episodes. Add titles above, then run Queue → PC or NAS.</li>
+              <li class="download-queue-empty">Add titles, then click Download. Files are saved to the NAS.</li>
             </ul>
           </section>
 
@@ -180,8 +195,8 @@
             </div>
 
             <div class="catalog-detail-actions">
-              <button id="catalog-download-local" type="button" class="primary">Download → PC</button>
-              <button id="catalog-download-nas" type="button" class="accent">Save to NAS</button>
+              <button id="catalog-download-local" type="button" class="primary" hidden>Download → PC</button>
+              <button id="catalog-download-nas" type="button" class="primary">Download</button>
               <button id="catalog-add-queue" type="button" class="secondary">Add to Queue</button>
             </div>
           </div>
@@ -239,49 +254,88 @@
       </div>
     </footer>
 
-    <aside id="nas-connect-panel" class="nas-connect-panel" hidden>
-      <form id="nas-connect-form" class="nas-connect-card">
-        <strong>Sign in to NAS</strong>
-        <p class="nas-connect-intro">Enter the username and password for your NAS share.</p>
-        <label class="nas-connect-field">
-          <span>Username</span>
-          <input id="nas-username" type="text" autocomplete="username" placeholder="e.g. admin" />
-        </label>
-        <label class="nas-connect-field">
-          <span>Password</span>
-          <input id="nas-password" type="password" autocomplete="current-password" />
-        </label>
-        <p id="nas-connect-error" class="nas-connect-error"></p>
-        <div class="nas-connect-actions">
-          <button id="nas-connect-cancel" type="button" class="secondary">Cancel</button>
-          <button id="nas-connect-save" type="submit" class="accent">Connect</button>
+    <aside id="settings-panel" class="settings-panel" hidden>
+      <div class="settings-backdrop" id="settings-backdrop"></div>
+      <form id="settings-form" class="settings-card">
+        <div class="settings-head">
+          <strong>Settings</strong>
+          <button id="settings-close" type="button" class="secondary">Close</button>
         </div>
-      </form>
-    </aside>
 
-    <aside id="site-connect-panel" class="nas-connect-panel" hidden>
-      <form id="site-connect-form" class="nas-connect-card">
-        <strong>Tornado Movies Login</strong>
-        <p class="nas-connect-intro">
-          Save your account here. The app will open the login page and submit it automatically.
-        </p>
-        <label class="nas-connect-field">
-          <span>Username or Email</span>
-          <input id="site-username" type="text" autocomplete="username" placeholder="Your Tornado Movies username" />
-        </label>
-        <label class="nas-connect-field">
-          <span>Password</span>
-          <input id="site-password" type="password" autocomplete="current-password" />
-        </label>
-        <label class="nas-connect-field site-auto-login-field">
-          <input id="site-auto-login" type="checkbox" checked />
-          <span>Auto-login when opening the site login page</span>
-        </label>
-        <p id="site-connect-error" class="nas-connect-error"></p>
-        <div class="nas-connect-actions">
-          <button id="site-connect-cancel" type="button" class="secondary">Cancel</button>
-          <button id="site-connect-save" type="submit" class="accent">Save &amp; Login</button>
-        </div>
+        <section class="settings-section" aria-labelledby="settings-folders-title">
+          <h3 id="settings-folders-title">Video folders</h3>
+          <p class="settings-intro">Downloads are always saved to this NAS folder.</p>
+          <label class="nas-connect-field" hidden>
+            <span>Local videos</span>
+            <div class="settings-path-row">
+              <input id="settings-local-folder" type="text" spellcheck="false" placeholder="C:\Users\...\Videos\Movies" />
+              <button id="settings-browse-local" type="button" class="secondary">Browse</button>
+            </div>
+            <div id="settings-local-storage" class="storage-meter" aria-live="polite">
+              <div class="storage-meter-track">
+                <div class="storage-meter-fill"></div>
+              </div>
+              <span class="storage-meter-label">Checking storage...</span>
+            </div>
+          </label>
+          <label class="nas-connect-field">
+            <span>NAS videos</span>
+            <div class="settings-path-row">
+              <input id="settings-nas-folder" type="text" spellcheck="false" placeholder="\\NAS\Media\Videos" />
+              <button id="settings-browse-nas" type="button" class="secondary">Browse</button>
+            </div>
+            <div id="settings-nas-storage" class="storage-meter" aria-live="polite">
+              <div class="storage-meter-track">
+                <div class="storage-meter-fill"></div>
+              </div>
+              <span class="storage-meter-label">Checking storage...</span>
+            </div>
+          </label>
+          <p id="settings-folder-error" class="nas-connect-error"></p>
+          <div class="settings-section-actions">
+            <button id="settings-save-folders" type="button" class="primary">Save Folders</button>
+          </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="settings-nas-title">
+          <h3 id="settings-nas-title">NAS sign-in</h3>
+          <p class="settings-intro">Use these credentials when saving to a network share.</p>
+          <label class="nas-connect-field">
+            <span>Username</span>
+            <input id="nas-username" type="text" autocomplete="username" placeholder="e.g. admin" />
+          </label>
+          <label class="nas-connect-field">
+            <span>Password</span>
+            <input id="nas-password" type="password" autocomplete="current-password" placeholder="Leave blank to keep the saved password" />
+          </label>
+          <p id="nas-connect-error" class="nas-connect-error"></p>
+          <div class="settings-section-actions">
+            <button id="nas-connect-save" type="button" class="accent">Connect NAS</button>
+          </div>
+        </section>
+
+        <section id="settings-site-section" class="settings-section" aria-labelledby="settings-site-title">
+          <h3 id="settings-site-title">Tornado Movies Premium</h3>
+          <p class="settings-intro">
+            Save your premium account, then log in. The app opens the sign-in page and submits it automatically.
+          </p>
+          <label class="nas-connect-field">
+            <span>Username or Email</span>
+            <input id="site-username" type="text" autocomplete="username" placeholder="Your Tornado Movies username" />
+          </label>
+          <label class="nas-connect-field">
+            <span>Password</span>
+            <input id="site-password" type="password" autocomplete="current-password" placeholder="Leave blank to keep the saved password" />
+          </label>
+          <label class="nas-connect-field site-auto-login-field">
+            <input id="site-auto-login" type="checkbox" checked />
+            <span>Auto-login when opening the site login page</span>
+          </label>
+          <p id="site-connect-error" class="nas-connect-error"></p>
+          <div class="settings-section-actions">
+            <button id="site-connect-save" type="button" class="accent">Log in to Tornado Movies</button>
+          </div>
+        </section>
       </form>
     </aside>
 

@@ -3,6 +3,18 @@ const DIRECT_LINK_PATTERN =
 
 const GETBUTTON_TYPES = ["true", "movie", "1", "0"];
 const DOWNLOAD_API_PATHS = ["getdownload", "getbutton", "getlink"];
+const FETCH_LINKS_TIMEOUT_MS = 12_000;
+const PAGE_SCAN_BUDGET_MS = 8_000;
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
 const {
   canonicalMoviePageUrl,
   extractMovieIdFromUrl
@@ -256,8 +268,10 @@ async function fetchDirectLinksForMovie(contents, movieUrl) {
       const types = ${JSON.stringify(GETBUTTON_TYPES)};
       const links = new Set();
       const attempts = [];
+      const deadline = Date.now() + ${PAGE_SCAN_BUDGET_MS};
 
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const timedOut = () => Date.now() >= deadline;
 
       const sanitizeUrl = (url) => {
         const text = String(url || "")
@@ -380,7 +394,7 @@ async function fetchDirectLinksForMovie(contents, movieUrl) {
               url,
               type: "get",
               dataType,
-              timeout: 15000,
+              timeout: 6000,
               success: resolve,
               error: (_xhr, status, error) => reject(new Error(String(status || error || "ajax-error")))
             });
@@ -432,12 +446,16 @@ async function fetchDirectLinksForMovie(contents, movieUrl) {
         if (!window.jQuery) {
           return { ok: false, type, movieId, reason: "missing-jquery" };
         }
+        if (timedOut()) {
+          return { ok: false, type, movieId, reason: "deadline" };
+        }
 
         const beforeAll = links.size;
         const apiAttempts = [];
         const apiPaths = ${JSON.stringify(DOWNLOAD_API_PATHS)};
 
         for (const apiPath of apiPaths) {
+          if (timedOut()) break;
           const dataType = apiPath === "getdownload" ? "json" : "html";
           const response = await fetchDownloadApi(apiPath, type, dataType, movieId);
           apiAttempts.push({
@@ -468,13 +486,14 @@ async function fetchDirectLinksForMovie(contents, movieUrl) {
             const button = injectGetbuttonHtml(html);
             const nestedUrls = parseAjaxUrlsFromHtml(html);
             for (const nestedUrl of nestedUrls) {
+              if (timedOut()) break;
               try {
                 const nested = await new Promise((resolve, reject) => {
                   window.jQuery.ajax({
                     url: nestedUrl,
                     type: "get",
                     dataType: /json/i.test(nestedUrl) ? "json" : "html",
-                    timeout: 15000,
+                    timeout: 6000,
                     success: resolve,
                     error: (_xhr, status, error) => reject(new Error(String(status || error)))
                   });
@@ -487,17 +506,18 @@ async function fetchDirectLinksForMovie(contents, movieUrl) {
             if (button) button.click();
 
             const started = Date.now();
-            while (Date.now() - started < 12000) {
-              await sleep(400);
+            while (Date.now() - started < 2000 && !timedOut()) {
+              await sleep(250);
               collectLinksFromDom();
-              if (maxLinkHeight() >= 1080) break;
+              if (links.size > beforeAll) break;
               if (button?.classList?.contains("qualLoaded")) {
-                await sleep(700);
                 collectLinksFromDom();
-                if (maxLinkHeight() >= 1080) break;
+                if (links.size > beforeAll) break;
               }
             }
           }
+
+          if (links.size > beforeAll) break;
         }
 
         return {
@@ -519,14 +539,17 @@ async function fetchDirectLinksForMovie(contents, movieUrl) {
       await clickDownloadTriggers(document);
 
       for (const movieId of downloadIds) {
+        if (timedOut()) break;
         for (const type of types) {
+          if (timedOut()) break;
           const attempt = await activateDownloadDropdown(type, movieId);
           attempts.push(attempt);
+          if (links.size > 0) break;
         }
-        if (maxLinkHeight() >= 1080) break;
+        if (links.size > 0) break;
       }
 
-      if (window.Player && /\\/(?:movie|tv-series|tv|serie|series|episode|episodes)\\//i.test(window.location.pathname)) {
+      if (!timedOut() && window.Player && /\\/(?:movie|tv-series|tv|serie|series|episode|episodes)\\//i.test(window.location.pathname)) {
         try {
           if (typeof window.Player.getLinks === "function") window.Player.getLinks();
         } catch {}
@@ -549,7 +572,11 @@ async function fetchDirectLinksForMovie(contents, movieUrl) {
   `;
 
   try {
-    return await contents.executeJavaScript(script);
+    return await withTimeout(
+      contents.executeJavaScript(script),
+      FETCH_LINKS_TIMEOUT_MS,
+      "Download link scan timed out."
+    );
   } catch (error) {
     return { ok: false, error: error.message || String(error), links: [] };
   }
@@ -578,6 +605,7 @@ module.exports = {
   DIRECT_LINK_PATTERN,
   GETBUTTON_TYPES,
   extractMovieIdFromUrl,
+  withTimeout,
   buildTornadoDownloadScraperScript,
   setupTornadoDownloadScraper,
   fetchDirectLinksForMovie,

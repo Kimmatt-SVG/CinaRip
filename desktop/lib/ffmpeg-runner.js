@@ -72,18 +72,14 @@ function findFfmpeg() {
 }
 
 function moviesDirectory() {
-  const configured = process.env.HLS_CAPTURE_OUTPUT_DIR;
-  if (configured) return path.resolve(configured);
-
-  let outputFolder = "Movies";
   try {
-    const { getActiveProfile } = require("./site-profiles");
-    outputFolder = getActiveProfile().outputFolder || "Movies";
+    const { configuredLocalVideoFolder, defaultLocalVideoFolder } = require("./local-config");
+    return configuredLocalVideoFolder() || defaultLocalVideoFolder();
   } catch {
-    // Keep default Movies folder.
+    const configured = process.env.HLS_CAPTURE_OUTPUT_DIR;
+    if (configured) return path.resolve(configured);
+    return path.join(app.getPath("videos"), "Movies");
   }
-
-  return path.join(app.getPath("videos"), outputFolder);
 }
 
 function outputDirectory() {

@@ -11,24 +11,33 @@ const stopButton = document.getElementById("stop-download");
 const refreshButton = document.getElementById("refresh-detect");
 const reloadSiteButton = document.getElementById("reload-site");
 const backButton = document.getElementById("go-back");
+const homeButton = document.getElementById("go-home");
 const forwardButton = document.getElementById("go-forward");
 const openFolderButton = document.getElementById("open-folder");
 const syncToNasButton = document.getElementById("sync-to-nas");
-const connectNasButton = document.getElementById("connect-nas");
-const connectSiteButton = document.getElementById("connect-site");
-const nasConnectPanel = document.getElementById("nas-connect-panel");
-const nasConnectForm = document.getElementById("nas-connect-form");
+const openSettingsButton = document.getElementById("open-settings");
+const settingsPanel = document.getElementById("settings-panel");
+const settingsForm = document.getElementById("settings-form");
+const settingsBackdrop = document.getElementById("settings-backdrop");
+const settingsCloseButton = document.getElementById("settings-close");
+const settingsLocalFolderInput = document.getElementById("settings-local-folder");
+const settingsNasFolderInput = document.getElementById("settings-nas-folder");
+const settingsBrowseLocalButton = document.getElementById("settings-browse-local");
+const settingsBrowseNasButton = document.getElementById("settings-browse-nas");
+const settingsSaveFoldersButton = document.getElementById("settings-save-folders");
+const settingsFolderError = document.getElementById("settings-folder-error");
+const settingsLocalStorage = document.getElementById("settings-local-storage");
+const settingsNasStorage = document.getElementById("settings-nas-storage");
+const settingsSiteSection = document.getElementById("settings-site-section");
 const nasUsernameInput = document.getElementById("nas-username");
 const nasPasswordInput = document.getElementById("nas-password");
 const nasConnectError = document.getElementById("nas-connect-error");
-const nasConnectCancel = document.getElementById("nas-connect-cancel");
-const siteConnectPanel = document.getElementById("site-connect-panel");
-const siteConnectForm = document.getElementById("site-connect-form");
+const nasConnectSave = document.getElementById("nas-connect-save");
 const siteUsernameInput = document.getElementById("site-username");
 const sitePasswordInput = document.getElementById("site-password");
 const siteAutoLoginInput = document.getElementById("site-auto-login");
 const siteConnectError = document.getElementById("site-connect-error");
-const siteConnectCancel = document.getElementById("site-connect-cancel");
+const siteConnectSave = document.getElementById("site-connect-save");
 const blockedPanel = document.getElementById("blocked-panel");
 const blockedDetail = document.getElementById("blocked-detail");
 const installStatus = document.getElementById("install-status");
@@ -41,6 +50,9 @@ const searchPanel = document.getElementById("search-panel");
 const searchError = document.getElementById("search-error");
 const browseHomeButton = document.getElementById("browse-home");
 const catalogHome = document.getElementById("catalog-home");
+const animeHero = document.getElementById("anime-hero");
+const animeHeroTitle = document.getElementById("anime-hero-title");
+const animeHeroLead = document.getElementById("anime-hero-lead");
 const catalogLibrary = document.getElementById("catalog-library");
 const catalogResults = document.getElementById("catalog-results");
 const catalogDetail = document.getElementById("catalog-detail");
@@ -104,6 +116,7 @@ const tvShowEpisodeList = document.getElementById("tv-show-episode-list");
 const scanTvShowButton = document.getElementById("scan-tv-show");
 const queueTvSeasonRow = document.getElementById("queue-tv-season-row");
 const queueTvSeasonSelect = document.getElementById("queue-tv-season-select");
+const addCurrentEpisodeButton = document.getElementById("add-current-episode");
 const addTvToQueueButton = document.getElementById("add-tv-to-queue");
 const clearTvShowPlanButton = document.getElementById("clear-tv-show-plan");
 const browseSiteForTvButton = document.getElementById("browse-site-for-tv");
@@ -128,6 +141,7 @@ let catalogMode = false;
 let catalogMovies = [];
 let selectedCatalogMovie = null;
 let catalogView = "home";
+let animeView = "home";
 let catalogHomeAnimated = false;
 let siteLabel = "Tornado Movies";
 let pendingNasRetry = null;
@@ -233,18 +247,92 @@ function showSearchPanel() {
     showCatalogView(keep);
     streamStatus.textContent =
       catalogView === "home" ? "Search the catalog to begin." : streamStatus.textContent;
+  } else if (hideMovieDownloader) {
+    showAnimeHome();
   } else {
-    streamStatus.textContent = hideMovieDownloader
-      ? "Search for an anime series on Aniwave."
-      : "Search for a movie to begin.";
+    streamStatus.textContent = "Search for a movie to begin.";
   }
   toolbarSearchInput?.focus();
 }
 
 function hideSearchPanel() {
   if (catalogMode) return;
+  if (hideMovieDownloader) return;
   searchPanel.hidden = true;
   searchError.textContent = "";
+}
+
+function showAnimeHome(options = {}) {
+  animeView = "home";
+  siteBrowseMode = false;
+  searchPanel.hidden = false;
+  searchPanel.classList.add("catalog-mode", "anime-shell");
+  searchPanel.classList.remove("site-browse-mode");
+  if (catalogHome) catalogHome.hidden = false;
+  if (catalogLibrary) catalogLibrary.hidden = true;
+  if (catalogResults) catalogResults.hidden = true;
+  if (catalogDetail) catalogDetail.hidden = true;
+  if (animeHero) animeHero.hidden = true;
+  if (browseSiteForTvButton) {
+    browseSiteForTvButton.hidden = false;
+    browseSiteForTvButton.textContent = `Browse ${siteLabel}`;
+  }
+  if (backToCatalogButton) {
+    backToCatalogButton.hidden = true;
+    backToCatalogButton.textContent = "← Home";
+  }
+  for (const button of [backButton, forwardButton, reloadSiteButton]) {
+    if (button) button.hidden = true;
+  }
+  if (homeButton) homeButton.hidden = false;
+  streamStatus.textContent = "Search a title, or browse Aniwave, then scan episodes into the queue.";
+  window.streamApp.setCatalogBrowserLocked(true);
+  reportChromeLayout();
+  if (options.animate !== false && catalogHome) {
+    window.shellMotion?.animateCatalogHome(catalogHome);
+  }
+}
+
+function showAnimeLibrary() {
+  animeView = "library";
+  siteBrowseMode = false;
+  searchPanel.hidden = false;
+  searchPanel.classList.add("catalog-mode", "anime-shell");
+  searchPanel.classList.remove("site-browse-mode");
+  if (catalogHome) catalogHome.hidden = true;
+  if (catalogLibrary) catalogLibrary.hidden = false;
+  if (catalogResults) catalogResults.hidden = true;
+  if (catalogDetail) catalogDetail.hidden = true;
+  streamStatus.textContent = "Your downloaded anime.";
+  window.streamApp.setCatalogBrowserLocked(true);
+  refreshLibrary(true);
+  reportChromeLayout();
+}
+
+function enterAnimeBrowse(statusText) {
+  animeView = "browse";
+  siteBrowseMode = true;
+  searchError.textContent = "";
+  searchPanel.hidden = false;
+  searchPanel.classList.add("catalog-mode", "anime-shell", "site-browse-mode");
+  if (catalogHome) catalogHome.hidden = false;
+  if (catalogLibrary) catalogLibrary.hidden = true;
+  if (catalogResults) catalogResults.hidden = true;
+  if (catalogDetail) catalogDetail.hidden = true;
+  if (animeHero) animeHero.hidden = true;
+  if (browseSiteForTvButton) browseSiteForTvButton.hidden = true;
+  if (backToCatalogButton) {
+    backToCatalogButton.hidden = false;
+    backToCatalogButton.textContent = "← Home";
+  }
+  for (const button of [backButton, homeButton, forwardButton, reloadSiteButton]) {
+    if (button) button.hidden = false;
+  }
+  streamStatus.textContent =
+    statusText || `Browsing ${siteLabel} — open a series, then scan episodes below.`;
+  window.streamApp.setCatalogBrowserLocked(false);
+  reportChromeLayout();
+  setTimeout(reportChromeLayout, 80);
 }
 
 function showCatalogView(view) {
@@ -628,7 +716,7 @@ async function queueSelectedCatalogTvSeason() {
     if (!scan.ok) return scan;
   }
 
-  const result = await window.streamApp.addTvPlanToQueue("local");
+  const result = await window.streamApp.addTvPlanToQueue("nas");
   if (!result.ok) {
     appendActivityLog("error", result.error || "Could not add episodes to queue.");
     if (catalogDetailStatus) {
@@ -754,7 +842,7 @@ async function downloadSelectedCatalogMovie(destination) {
   if (catalogDetailStatus) catalogDetailStatus.textContent = `Download started → ${label}`;
 }
 
-async function addSelectedCatalogMovieToQueue(destination = "local") {
+async function addSelectedCatalogMovieToQueue(destination = "nas") {
   if (!selectedCatalogMovie?.movieUrl) {
     appendActivityLog("error", "Select a title from the catalog first.");
     return { ok: false };
@@ -792,6 +880,10 @@ async function runSearch(query, sourceInput = null) {
 
   searchError.textContent = "";
   streamStatus.textContent = `Searching for "${trimmed}"...`;
+  if (hideMovieDownloader && !catalogMode) {
+    enterAnimeBrowse(`Searching Aniwave for "${trimmed}"...`);
+    await window.streamApp.setCatalogBrowserLocked(false);
+  }
   if (catalogMode && catalogResultsSummary) {
     catalogResultsSummary.textContent = "Searching...";
     showCatalogView("results");
@@ -861,7 +953,36 @@ function formatBytes(bytes) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
-  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (value < 1024 * 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  return `${(value / 1024 / 1024 / 1024 / 1024).toFixed(1)} TB`;
+}
+
+function formatStorageLabel(info) {
+  if (!info?.ok) return info?.error || "Storage unavailable";
+  return `${formatBytes(info.available)} free of ${formatBytes(info.total)}`;
+}
+
+function applyStorageMeter(root, info) {
+  if (!root) return;
+  const fill = root.querySelector(".storage-meter-fill");
+  const label = root.querySelector(".storage-meter-label");
+  const usedPercent = info?.ok ? Math.min(100, Math.max(0, Number(info.usedPercent) || 0)) : 0;
+
+  root.classList.toggle("unavailable", !info?.ok);
+  root.classList.toggle("storage-warn", Boolean(info?.ok) && usedPercent >= 70);
+  root.classList.toggle("storage-critical", Boolean(info?.ok) && usedPercent >= 90);
+
+  if (fill) fill.style.width = `${usedPercent}%`;
+  if (label) label.textContent = formatStorageLabel(info);
+}
+
+function createStorageMeter(info) {
+  const meter = document.createElement("div");
+  meter.className = "storage-meter library-storage-meter";
+  meter.innerHTML =
+    '<div class="storage-meter-track"><div class="storage-meter-fill"></div></div><span class="storage-meter-label"></span>';
+  applyStorageMeter(meter, info);
+  return meter;
 }
 
 function renderLibraryItem(movie) {
@@ -952,7 +1073,7 @@ function renderLibraryShowItem(show) {
 
   const badge = document.createElement("span");
   badge.className = "library-poster-badge kind-tv";
-  badge.textContent = "TV";
+  badge.textContent = hideMovieDownloader ? "Anime" : "TV";
 
   const title = document.createElement("span");
   title.className = "library-title";
@@ -1080,7 +1201,7 @@ function renderLibrarySection(section, label, location) {
   folderPath.textContent = formatLibraryPath(section.folderPath);
   folderPath.title = section.folderPath || "";
 
-  titleWrap.append(title, folderPath);
+  titleWrap.append(title, folderPath, createStorageMeter(section.storage));
 
   const actions = document.createElement("div");
   actions.className = "library-section-actions";
@@ -1108,7 +1229,7 @@ function renderLibrarySection(section, label, location) {
     syncButton.type = "button";
     syncButton.className = "library-open-folder";
     syncButton.textContent = "Sync";
-    syncButton.title = "Copy all PC movies to NAS (skip existing)";
+    syncButton.title = "Copy PC titles to NAS, then delete the local copies";
     syncButton.addEventListener("click", (event) => {
       event.stopPropagation();
       runLibrarySync();
@@ -1137,12 +1258,37 @@ function renderLibrarySection(section, label, location) {
     return wrapper;
   }
 
-  const list = document.createElement("ul");
-  list.className = "library-list";
-  for (const movie of section.movies) {
-    list.appendChild(renderLibraryItem(movie));
+  const active = section.movies.filter((item) => !item.frozen);
+  const frozen = section.movies.filter((item) => item.frozen);
+
+  if (active.length) {
+    const list = document.createElement("ul");
+    list.className = "library-list";
+    for (const movie of active) {
+      list.appendChild(renderLibraryItem(movie));
+    }
+    wrapper.appendChild(list);
   }
-  wrapper.appendChild(list);
+
+  if (frozen.length) {
+    const freezerTitle = document.createElement("h3");
+    freezerTitle.className = "library-freezer-title";
+    freezerTitle.textContent = "Freezer";
+    const freezerHint = document.createElement("p");
+    freezerHint.className = "library-empty";
+    freezerHint.textContent = "Packed away to save space.";
+    const frozenList = document.createElement("ul");
+    frozenList.className = "library-list";
+    for (const movie of frozen) {
+      frozenList.appendChild(renderLibraryItem(movie));
+    }
+    wrapper.append(freezerTitle, freezerHint, frozenList);
+  } else if (!active.length) {
+    const empty = document.createElement("p");
+    empty.className = "library-empty";
+    empty.textContent = "(empty)";
+    wrapper.appendChild(empty);
+  }
 
   const drawer = document.createElement("div");
   drawer.className = "library-episode-drawer";
@@ -1158,21 +1304,28 @@ async function refreshLibrary(force = false) {
   if (!force && now - lastLibraryRefreshAt < 4000) return;
 
   lastLibraryRefreshAt = now;
-  const library = await window.streamApp.getDownloadedMovies({
-    backfillPosters: Boolean(force)
-  });
+  const [library, storage] = await Promise.all([
+    window.streamApp.getDownloadedMovies({
+      backfillPosters: Boolean(force)
+    }),
+    window.streamApp.getFolderStorage()
+  ]);
 
-  librarySections.replaceChildren(
-    renderLibrarySection(library.local, "Movies & TV on this PC", "local"),
-    renderLibrarySection(library.nas, "Movies & TV on NAS", "nas")
-  );
+  if (library.local) library.local.storage = storage?.local;
+  if (library.nas) library.nas.storage = storage?.nas;
+
+  const nasLabel = hideMovieDownloader ? "Anime on NAS" : "Movies & TV on NAS";
+  librarySections.replaceChildren(renderLibrarySection(library.nas, nasLabel, "nas"));
 
   const env = await window.streamApp.getEnvironment();
+  const showWord = hideMovieDownloader ? "series" : "TV show";
   librarySummary.textContent = `${library.totalCount} title${library.totalCount === 1 ? "" : "s"}${
-    library.showCount ? ` · ${library.showCount} TV show${library.showCount === 1 ? "" : "s"}` : ""
+    library.showCount
+      ? ` · ${library.showCount} ${showWord}${library.showCount === 1 ? "" : "s"}`
+      : ""
   } · NAS: ${formatLibraryPath(env.nasVideoFolder)}`;
 
-  if (catalogMode && catalogView === "library") {
+  if ((catalogMode && catalogView === "library") || (hideMovieDownloader && animeView === "library")) {
     const items = librarySections.querySelectorAll(".library-item");
     // Avoid opacity-freeze entrance on library tiles — posters were staying invisible.
     for (const item of items) {
@@ -1232,8 +1385,8 @@ function setSyncControlsDisabled(disabled) {
   setToolbarDisabled(syncToNasButton, disabled);
 }
 
-function queueStatusLabel(status) {
-  switch (status) {
+function queueStatusLabel(item) {
+  switch (item?.status) {
     case "loading":
       return "Loading";
     case "downloading":
@@ -1243,7 +1396,7 @@ function queueStatusLabel(status) {
     case "failed":
       return "Failed";
     default:
-      return "Pending";
+      return item?.passRetries ? "Retry" : "Pending";
   }
 }
 
@@ -1268,8 +1421,9 @@ function renderDownloadQueue(snapshot) {
   if (!items.length) {
     const empty = document.createElement("li");
     empty.className = "download-queue-empty";
-    empty.textContent =
-      "Add movies from search or TV episodes from a season scan. One queue runs everything.";
+    empty.textContent = hideMovieDownloader
+      ? "Scan a series, add episodes, then click Download. Files go to the NAS."
+      : "Add titles, then click Download. Files are saved to the NAS.";
     downloadQueueList.appendChild(empty);
     return;
   }
@@ -1278,6 +1432,7 @@ function renderDownloadQueue(snapshot) {
     const row = document.createElement("li");
     row.className = `download-queue-item status-${item.status}`;
     if (item.kind === "episode") row.classList.add("kind-episode");
+    else row.classList.add("kind-movie");
     if (item.id === snapshot.currentId) row.classList.add("current");
 
     const title = document.createElement("span");
@@ -1287,11 +1442,11 @@ function renderDownloadQueue(snapshot) {
 
     const badge = document.createElement("span");
     badge.className = "download-queue-item-status";
-    badge.textContent = queueStatusLabel(item.status);
+    badge.textContent = queueStatusLabel(item);
 
     const meta = document.createElement("span");
     meta.className = "download-queue-item-meta";
-    const kindLabel = item.kind === "episode" ? "TV" : "Movie";
+    const kindLabel = item.kind === "episode" ? (hideMovieDownloader ? "Episode" : "TV") : "Movie";
     meta.textContent = `${kindLabel} · ${item.destination === "nas" ? "NAS" : "PC"}`;
 
     row.append(title, badge, meta);
@@ -1323,10 +1478,10 @@ function renderDownloadQueue(snapshot) {
 
 function updateQueueControls(snapshot) {
   const running = Boolean(snapshot?.running);
-  const hasPending = (snapshot?.counts?.pending || 0) > 0;
+  const hasWork = (snapshot?.counts?.pending || 0) > 0 || (snapshot?.counts?.failed || 0) > 0;
 
-  startDownloadQueueLocalButton.disabled = running || !hasPending;
-  startDownloadQueueNasButton.disabled = running || !hasPending;
+  startDownloadQueueLocalButton.disabled = running || (!hasWork && !hideMovieDownloader);
+  startDownloadQueueNasButton.disabled = running || (!hasWork && !hideMovieDownloader);
   stopDownloadQueueButton.hidden = !running;
   clearDownloadQueueButton.disabled = running;
   addSearchToQueueButton.disabled = running;
@@ -1348,6 +1503,9 @@ function handleQueueUpdate(payload = {}) {
   if (queueActive && payload.item) {
     const target = payload.item.destination === "nas" ? "NAS" : "PC";
     if (payload.phase === "loading") {
+      if (hideMovieDownloader) {
+        enterAnimeBrowse(`Queue: capturing ${payload.item.title}...`);
+      }
       streamStatus.textContent = `Queue: opening ${payload.item.title}...`;
       if (progressHideTimer) clearTimeout(progressHideTimer);
       progressDock.hidden = false;
@@ -1369,9 +1527,23 @@ function handleQueueUpdate(payload = {}) {
       });
     } else if (payload.phase === "retrying") {
       streamStatus.textContent = `Queue: retrying ${payload.item.title} (attempt ${payload.attempt || 2})...`;
+    } else if (payload.phase === "item-failed") {
+      streamStatus.textContent = `Queue: failed ${payload.item.title} — moving to next`;
+      appendActivityLog("error", `Queue: ${payload.item.title} failed`, payload.error || "");
     } else if (payload.phase === "preparing") {
       streamStatus.textContent = `Queue: starting download for ${payload.item.title} (${target})...`;
     }
+  }
+
+  if (payload.phase === "retry-pass") {
+    streamStatus.textContent = `Queue: retrying ${payload.retried || 0} failed item${payload.retried === 1 ? "" : "s"}...`;
+    appendActivityLog("info", `Queue: retrying ${payload.retried || 0} failed item${payload.retried === 1 ? "" : "s"}`);
+    updateProgressDock({
+      state: "running",
+      phase: "Queue · Retrying failed items",
+      indeterminate: true,
+      destination: "local"
+    });
   }
 
   if (payload.phase === "stopping") {
@@ -1392,13 +1564,26 @@ function handleQueueUpdate(payload = {}) {
     streamStatus.textContent = counts.failed
       ? "Queue finished with errors — see the queue list."
       : "Queue finished — all downloads complete.";
+    updateProgressDock({
+      state: counts.failed ? "failed" : "finished",
+      phase: counts.failed ? "Queue finished with errors" : "Queue finished",
+      percent: 100,
+      destination: "local"
+    });
+    scheduleProgressHide(counts.failed ? 12000 : 8000);
     refreshLibrary(true);
+    if (hideMovieDownloader) {
+      showAnimeHome({ animate: false });
+      window.streamApp.setCatalogBrowserLocked(true);
+    }
   }
 
   if (payload.phase === "item-complete" && payload.item) {
     appendActivityLog("success", `Queue: finished ${payload.item.title}`);
   }
 }
+
+let queueRecoveryLogged = false;
 
 async function refreshDownloadQueue() {
   const result = await window.streamApp.getDownloadQueue();
@@ -1407,48 +1592,187 @@ async function refreshDownloadQueue() {
       snapshot: result.snapshot,
       phase: result.processing ? "running" : "idle"
     });
+    const recovery = result.recovery;
+    if (!queueRecoveryLogged && recovery?.restored) {
+      queueRecoveryLogged = true;
+      const interrupted = recovery.interrupted
+        ? ` ${recovery.interrupted} interrupted download${recovery.interrupted === 1 ? " was" : "s were"} reset to pending.`
+        : "";
+      appendActivityLog(
+        "info",
+        `Restored queue from last session: ${recovery.restored} item${recovery.restored === 1 ? "" : "s"}.${interrupted}`
+      );
+    }
   }
 }
 
-async function showNasConnectPanel(retryAction = null) {
-  pendingNasRetry = retryAction;
+async function fillSettingsForm() {
+  const env = await window.streamApp.getEnvironment();
+  const nasCreds = await window.streamApp.getNasCredentials();
+  const siteCreds = await window.streamApp.getSiteCredentials();
+
+  if (settingsLocalFolderInput) {
+    settingsLocalFolderInput.value = env.outputDirectory || env.defaultLocalVideoFolder || "";
+  }
+  if (settingsNasFolderInput) {
+    settingsNasFolderInput.value = env.nasVideoFolder || "";
+  }
+  if (settingsFolderError) settingsFolderError.textContent = "";
   nasConnectError.textContent = "";
-  const creds = await window.streamApp.getNasCredentials();
-  nasUsernameInput.value = creds.username || "";
+  siteConnectError.textContent = "";
+
+  nasUsernameInput.value = nasCreds.username || "";
   nasPasswordInput.value = "";
-  nasConnectPanel.hidden = false;
-  nasUsernameInput.focus();
+  nasPasswordInput.placeholder = nasCreds.hasPassword
+    ? "Leave blank to keep the saved password"
+    : "";
+
+  siteUsernameInput.value = siteCreds.username || "";
+  sitePasswordInput.value = "";
+  sitePasswordInput.placeholder = siteCreds.hasPassword
+    ? "Leave blank to keep the saved password"
+    : "";
+  siteAutoLoginInput.checked = siteCreds.autoLogin !== false;
+
+  if (settingsSiteSection) settingsSiteSection.hidden = hideMovieDownloader;
+  refreshSettingsStorage();
 }
 
-function hideNasConnectPanel() {
-  nasConnectPanel.hidden = true;
+let settingsStorageTimer = null;
+let settingsStorageRequest = 0;
+
+async function refreshSettingsStorage() {
+  const requestId = ++settingsStorageRequest;
+  const localFolder = settingsLocalFolderInput?.value.trim() || "";
+  const nasFolder = settingsNasFolderInput?.value.trim() || "";
+
+  applyStorageMeter(
+    settingsLocalStorage,
+    localFolder ? { ok: false, error: "Checking storage..." } : { ok: false, error: "Set a local folder to see storage" }
+  );
+  applyStorageMeter(
+    settingsNasStorage,
+    nasFolder ? { ok: false, error: "Checking storage..." } : { ok: false, error: "Set a NAS folder to see storage" }
+  );
+
+  const result = await window.streamApp.getFolderStorage({
+    localFolder,
+    nasFolder
+  });
+  if (requestId !== settingsStorageRequest) return;
+
+  applyStorageMeter(settingsLocalStorage, result?.local);
+  applyStorageMeter(settingsNasStorage, result?.nas);
+}
+
+function scheduleSettingsStorageRefresh() {
+  if (settingsStorageTimer) clearTimeout(settingsStorageTimer);
+  settingsStorageTimer = setTimeout(() => {
+    refreshSettingsStorage();
+  }, 450);
+}
+
+async function showSettingsPanel(options = {}) {
+  pendingNasRetry = options.retryAction || pendingNasRetry;
+  await fillSettingsForm();
+  if (options.error) {
+    nasConnectError.textContent = options.error;
+  }
+  settingsPanel.hidden = false;
+  if (options.focus === "nas") {
+    nasUsernameInput.focus();
+  } else if (options.focus === "site") {
+    siteUsernameInput.focus();
+  } else {
+    settingsLocalFolderInput?.focus();
+  }
+}
+
+function hideSettingsPanel() {
+  settingsPanel.hidden = true;
+  if (settingsFolderError) settingsFolderError.textContent = "";
   nasConnectError.textContent = "";
+  siteConnectError.textContent = "";
   pendingNasRetry = null;
 }
 
+async function browseFolder(kind) {
+  const current =
+    kind === "nas" ? settingsNasFolderInput.value.trim() : settingsLocalFolderInput.value.trim();
+  const result = await window.streamApp.chooseFolder({
+    title: kind === "nas" ? "Choose NAS videos folder" : "Choose local videos folder",
+    defaultPath: current || undefined
+  });
+  if (!result?.ok) return;
+  if (kind === "nas") {
+    settingsNasFolderInput.value = result.path;
+  } else {
+    settingsLocalFolderInput.value = result.path;
+  }
+  refreshSettingsStorage();
+}
+
+async function saveMediaFolders(options = {}) {
+  if (settingsFolderError) settingsFolderError.textContent = "";
+  const result = await window.streamApp.saveMediaFolders({
+    localVideoFolder: settingsLocalFolderInput.value.trim(),
+    nasVideoFolder: settingsNasFolderInput.value.trim()
+  });
+  if (!result.ok) {
+    if (settingsFolderError) {
+      settingsFolderError.textContent = result.error || "Could not save folders.";
+    }
+    return false;
+  }
+  if (result.outputDirectory) settingsLocalFolderInput.value = result.outputDirectory;
+  if (result.nasVideoFolder != null) settingsNasFolderInput.value = result.nasVideoFolder;
+  await refreshEnvStatus();
+  await refreshLibrary(true);
+  await refreshSettingsStorage();
+  if (!options.silent) {
+    streamStatus.textContent = "Saved local and NAS video folders.";
+  }
+  return true;
+}
+
+async function refreshEnvStatus() {
+  const env = await window.streamApp.getEnvironment();
+  const sitePart = env.siteLoggedIn
+    ? `Signed in${env.siteUsername ? ` · ${env.siteUsername}` : ""}`
+    : env.siteUsername
+      ? "saved account (not signed in)"
+      : "not signed in";
+  envStatus.textContent = `NAS: ${
+    env.nasVideoFolder ? formatLibraryPath(env.nasVideoFolder) : "not set"
+  } · Site: ${sitePart}`;
+  return env;
+}
+
+async function showNasConnectPanel(retryAction = null) {
+  await showSettingsPanel({ retryAction, focus: "nas" });
+}
+
+function hideNasConnectPanel() {
+  hideSettingsPanel();
+}
+
 function hideSiteConnectPanel() {
-  siteConnectPanel.hidden = true;
-  siteConnectError.textContent = "";
+  hideSettingsPanel();
 }
 
 async function showSiteConnectPanel() {
-  const creds = await window.streamApp.getSiteCredentials();
-  siteConnectError.textContent = "";
-  siteUsernameInput.value = creds.username || "";
-  sitePasswordInput.value = "";
-  siteAutoLoginInput.checked = creds.autoLogin !== false;
-  siteConnectPanel.hidden = false;
-  siteUsernameInput.focus();
+  await showSettingsPanel({ focus: "site" });
 }
 
 async function saveSiteConnection(event) {
-  event.preventDefault();
+  event?.preventDefault();
   siteConnectError.textContent = "";
 
   const username = siteUsernameInput.value.trim();
   const password = sitePasswordInput.value;
+  const creds = await window.streamApp.getSiteCredentials();
 
-  if (!username || !password) {
+  if (!username || (!password && !creds.hasPassword)) {
     siteConnectError.textContent = "Enter both username and password.";
     return;
   }
@@ -1459,20 +1783,27 @@ async function saveSiteConnection(event) {
     autoLogin: siteAutoLoginInput.checked
   });
 
-  hideSiteConnectPanel();
+  hideSettingsPanel();
   hideSearchPanel();
-  appendActivityLog("info", "Attempting Tornado Movies login...");
-  streamStatus.textContent = "Opening Tornado Movies sign-in page...";
+  appendActivityLog("info", "Checking Tornado Movies session...");
+  streamStatus.textContent = "Checking Tornado Movies session...";
 
   const result = await window.streamApp.siteLogin();
   if (!result.ok) {
     siteConnectError.textContent = result.error || "Could not start site login.";
-    siteConnectPanel.hidden = false;
+    await showSettingsPanel({ focus: "site" });
     streamStatus.textContent = result.error || "Site login failed.";
     return;
   }
 
+  if (result.status === "already-logged-in") {
+    streamStatus.textContent = "Already signed in to Tornado Movies.";
+    await refreshEnvStatus();
+    return;
+  }
+
   streamStatus.textContent = "Submitting sign-in on premium page (no modal)...";
+  await refreshEnvStatus();
 }
 
 async function saveNasConnection(event) {
@@ -1487,22 +1818,34 @@ async function saveNasConnection(event) {
     return;
   }
 
+  if (!settingsNasFolderInput.value.trim()) {
+    nasConnectError.textContent = "Set a NAS videos folder first.";
+    return;
+  }
+
+  const foldersSaved = await saveMediaFolders({ silent: true });
+  if (!foldersSaved) return;
+
   const result = await window.streamApp.saveNasCredentials({ username, password });
   if (!result.ok) {
     nasConnectError.textContent = result.error || "Could not connect to NAS.";
     return;
   }
 
-  hideNasConnectPanel();
+  const retryAction = pendingNasRetry;
+  hideSettingsPanel();
   streamStatus.textContent = result.createdFolder
     ? `Connected to NAS as ${username}. Created Videos folder on the share.`
     : `Connected to NAS as ${username}.`;
   await refreshLibrary(true);
+  await refreshEnvStatus();
 
-  if (pendingNasRetry === "sync") {
+  if (retryAction === "sync") {
     await runLibrarySync();
-  } else if (pendingNasRetry === "download") {
+  } else if (retryAction === "download") {
     await runDownload("nas");
+  } else if (retryAction === "save") {
+    saveNasButton?.click();
   }
 }
 
@@ -1524,7 +1867,7 @@ async function runLibrarySync() {
   setToolbarDisabled(saveNasButton, true);
   if (progressHideTimer) clearTimeout(progressHideTimer);
   progressDock.hidden = false;
-  streamStatus.textContent = "Syncing Movies folder to NAS...";
+  streamStatus.textContent = "Syncing library to NAS, then removing local copies...";
 
   updateProgressDock({
     state: "running",
@@ -1550,21 +1893,24 @@ async function runLibrarySync() {
 
     const errorNote =
       result.errors?.length > 0 ? ` · ${result.errors.length} failed` : "";
-    streamStatus.textContent = `NAS sync complete — ${result.copied} copied, ${result.skipped} skipped${errorNote}.`;
+    const removedNote = result.removed ? `, ${result.removed} removed from PC` : "";
+    streamStatus.textContent = `NAS sync complete — ${result.copied} copied, ${result.skipped} skipped${removedNote}${errorNote}.`;
     updateProgressDock({
       state: "finished",
       phase: "NAS sync complete",
       percent: 100,
       destination: "nas"
     });
-    progressDetailLeft.textContent = `${result.copied} copied · ${result.skipped} skipped`;
+    progressDetailLeft.textContent = `${result.copied} copied · ${result.skipped} skipped${
+      result.removed ? ` · ${result.removed} removed` : ""
+    }`;
     progressDetailRight.textContent = errorNote ? `${result.errors.length} failed` : "All done";
     appendActivityLog(
       "success",
-      `NAS sync complete — ${result.copied} copied, ${result.skipped} skipped${errorNote}`
+      `NAS sync complete — ${result.copied} copied, ${result.skipped} skipped${removedNote}${errorNote}`
     );
     await refreshLibrary(true);
-    scheduleProgressHide(result.errors?.length ? 12000 : 6000);
+    scheduleProgressHide(result.errors?.length ? 12000 : 8000);
   } catch (error) {
     unsubscribe();
     showDownloadError(error.message || "NAS sync failed.");
@@ -1642,7 +1988,7 @@ function reportChromeLayout() {
     if (browseDock && !browseDock.hidden) {
       bottom = Math.max(
         bottom,
-        Math.ceil(window.innerHeight - browseDock.getBoundingClientRect().top + margin)
+        Math.ceil(window.innerHeight - browseDock.getBoundingClientRect().top + margin + 18)
       );
     }
     if (dock && !dock.hidden) {
@@ -1718,6 +2064,8 @@ function updateSyncProgressDock(progress) {
     phase = "Preparing NAS sync...";
   } else if (progress.phase === "copying" && progress.fileName) {
     phase = `Copying ${progress.fileName}`;
+  } else if (progress.phase === "removing" && progress.fileName) {
+    phase = `Removing local ${progress.fileName}`;
   } else if (progress.phase === "complete") {
     phase = "NAS sync complete";
   }
@@ -1726,7 +2074,11 @@ function updateSyncProgressDock(progress) {
   progressPhase.textContent = phase;
 
   progressTrack.classList.remove("indeterminate", "complete", "failed");
-  if (percent == null) {
+  if (progress.phase === "complete") {
+    progressTrack.classList.add("complete");
+    progressPercent.textContent = "100%";
+    progressFill.style.width = "100%";
+  } else if (percent == null) {
     progressTrack.classList.add("indeterminate");
     progressPercent.textContent = "…";
     progressFill.style.width = "";
@@ -1746,8 +2098,10 @@ function updateSyncProgressDock(progress) {
       `${formatBytes(progress.fileBytes || 0)} / ${formatBytes(progress.fileTotalBytes)}`
     );
   }
-  if (progress.copied > 0 || progress.skipped > 0) {
-    leftParts.push(`${progress.copied} copied · ${progress.skipped} skipped`);
+  if (progress.copied > 0 || progress.skipped > 0 || progress.removed > 0) {
+    const parts = [`${progress.copied} copied · ${progress.skipped} skipped`];
+    if (progress.removed > 0) parts.push(`${progress.removed} removed`);
+    leftParts.push(parts.join(" · "));
   }
   progressDetailLeft.textContent = leftParts.join(" · ") || "Syncing to NAS";
 
@@ -1764,6 +2118,7 @@ function updateSyncProgressDock(progress) {
 
 function updateProgressDock(status) {
   if (!status || status.state === "idle") {
+    if (progressHideTimer) return;
     if (!downloadActive && !librarySyncActive && !queueActive) hideProgressDock();
     return;
   }
@@ -1837,6 +2192,15 @@ async function refreshDetection() {
         setToolbarDisabled(downloadButton, false);
         setToolbarDisabled(saveNasButton, false);
       }
+    }
+    return;
+  }
+
+  if (hideMovieDownloader) {
+    if (animeView === "browse" && target) {
+      streamStatus.textContent = bestDirect
+        ? `Direct ${bestDirect.qualityLabel} download ready · ${bestDirect.displayUrl}`
+        : `Stream ready (${best?.kind || "hls"}) · ${best?.displayUrl || ""}`;
     }
     return;
   }
@@ -1915,16 +2279,34 @@ function setMovieToolbarVisible(visible) {
   }
 }
 
+function placeAnimeQueueActionButtons(inRunBar) {
+  const runBar = document.querySelector(".queue-run-bar");
+  const tools = document.querySelector(".queue-tools .home-queue-actions");
+  if (!runBar || !tools) return;
+  const buttons = [scanTvShowButton, addCurrentEpisodeButton, addTvToQueueButton].filter(Boolean);
+  if (inRunBar) {
+    for (const button of buttons) {
+      runBar.insertBefore(button, startDownloadQueueLocalButton);
+    }
+    return;
+  }
+  for (const button of buttons) {
+    tools.appendChild(button);
+  }
+}
+
 function applyProfileLayout(env) {
   hideMovieDownloader = Boolean(env.hideMovieDownloader);
   catalogMode = Boolean(env.catalogMode) && !hideMovieDownloader;
   siteLabel = env.siteLabel || "Tornado Movies";
+  document.body.classList.toggle("anime-mode", hideMovieDownloader);
+
   if (browseHomeButton) {
     browseHomeButton.textContent = `Browse ${siteLabel}`;
     browseHomeButton.hidden = catalogMode;
   }
-  if (openLibraryButton) openLibraryButton.hidden = hideMovieDownloader || !catalogMode;
-  if (connectSiteButton) connectSiteButton.hidden = hideMovieDownloader;
+  if (openLibraryButton) openLibraryButton.hidden = !(catalogMode || hideMovieDownloader);
+  if (settingsSiteSection) settingsSiteSection.hidden = hideMovieDownloader;
   if (catalogBrand && env.profileLabel) catalogBrand.textContent = env.profileLabel;
 
   if (tvShowSection) tvShowSection.hidden = true;
@@ -1934,24 +2316,64 @@ function applyProfileLayout(env) {
     if (searchFeatures) searchFeatures.hidden = true;
     if (tvShowLead && env.tvShowLead) tvShowLead.textContent = env.tvShowLead;
     if (tvShowTitle) tvShowTitle.textContent = "Anime";
-    if (browseSiteForTvButton) browseSiteForTvButton.hidden = true;
-    if (backToCatalogButton) backToCatalogButton.hidden = true;
-    if (catalogResults) catalogResults.hidden = true;
-    if (catalogDetail) catalogDetail.hidden = true;
-    if (catalogLibrary) catalogLibrary.hidden = true;
-    if (catalogHome) catalogHome.hidden = false;
-    searchPanel.classList.remove("catalog-mode");
+    if (browseSiteForTvButton) {
+      browseSiteForTvButton.hidden = false;
+      browseSiteForTvButton.textContent = `Browse ${siteLabel}`;
+    }
+    if (backToCatalogButton) {
+      backToCatalogButton.hidden = true;
+      backToCatalogButton.textContent = "← Home";
+    }
+    if (addSearchToQueueButton) addSearchToQueueButton.hidden = true;
+    if (addCurrentToQueueButton) addCurrentToQueueButton.hidden = true;
+    if (animeHero) animeHero.hidden = true;
+    if (scanTvShowButton) scanTvShowButton.textContent = "Scan Series";
+    if (addTvToQueueButton) addTvToQueueButton.textContent = "Add Episodes";
+    if (addCurrentEpisodeButton) {
+      addCurrentEpisodeButton.hidden = false;
+      addCurrentEpisodeButton.textContent = "Add This Episode";
+    }
+    placeAnimeQueueActionButtons(true);
+    if (startDownloadQueueLocalButton) {
+      startDownloadQueueLocalButton.title = "Scan this series if needed, then download to this PC";
+    }
+    if (startDownloadQueueNasButton) {
+      startDownloadQueueNasButton.title = "Scan this series if needed, then download to NAS";
+    }
+    const toolsLabel = document.querySelector(".queue-tools-label");
+    if (toolsLabel) toolsLabel.textContent = "Scanned episodes";
+    const queueHead = downloadQueueSection?.querySelector(".home-queue-header strong");
+    if (queueHead) queueHead.textContent = "Episode Queue";
+    const emptyQueue = downloadQueueList?.querySelector(".download-queue-empty");
+    if (emptyQueue) {
+      emptyQueue.textContent = "Open a series, then click Download. Files are saved to the NAS.";
+    }
+    if (tvShowSummary) {
+      tvShowSummary.textContent = env.tvShowLead || "Open a series page, scan episodes, then add them to the queue.";
+    }
+    if (openSettingsButton) openSettingsButton.title = "Folders and NAS";
+    const libraryHeading = catalogLibrary?.querySelector("h2");
+    if (libraryHeading) libraryHeading.textContent = "My Anime";
     setMovieToolbarVisible(false);
-    for (const button of [backButton, forwardButton, reloadSiteButton]) {
-      if (button) button.hidden = false;
-    }
-    if (streamStatus) {
-      streamStatus.textContent = "Search Aniwave or open a series page, then scan episodes into the queue.";
-    }
+    if (homeButton) homeButton.hidden = false;
+    showAnimeHome({ animate: false });
     return;
   }
 
-  if (connectSiteButton) connectSiteButton.hidden = false;
+  placeAnimeQueueActionButtons(false);
+  if (startDownloadQueueLocalButton) startDownloadQueueLocalButton.removeAttribute("title");
+  if (startDownloadQueueNasButton) startDownloadQueueNasButton.removeAttribute("title");
+
+  if (animeHero) animeHero.hidden = true;
+  searchPanel.classList.remove("anime-shell");
+  if (addSearchToQueueButton) addSearchToQueueButton.hidden = false;
+  if (addCurrentToQueueButton) addCurrentToQueueButton.hidden = false;
+  if (addCurrentEpisodeButton) addCurrentEpisodeButton.hidden = true;
+  if (openSettingsButton) openSettingsButton.title = "Folders, NAS, and Tornado Movies login";
+  const libraryHeading = catalogLibrary?.querySelector("h2");
+  if (libraryHeading) libraryHeading.textContent = "My Library";
+
+  if (settingsSiteSection) settingsSiteSection.hidden = false;
   if (searchFeatures) searchFeatures.hidden = catalogMode;
   if (tvShowTitle) tvShowTitle.textContent = "TV Shows";
   if (tvShowLead) {
@@ -1985,7 +2407,7 @@ async function initEnvironment() {
     openAnimeWindowButton.hidden = !env.openAnimeButton;
   }
   if (openFolderButton && env.profileId === "anime") {
-    openFolderButton.textContent = "Open Anime Folder";
+    openFolderButton.textContent = "Open NAS Folder";
   }
   applyProfileLayout(env);
   if (!env.ffmpegPath) {
@@ -1995,14 +2417,14 @@ async function initEnvironment() {
       setToolbarDisabled(saveNasButton, true);
     }
   }
-  envStatus.textContent = `NAS: ${formatLibraryPath(env.nasVideoFolder)} · Site: ${env.siteUsername ? `logged in as ${env.siteUsername}` : "not configured"}`;
+  await refreshEnvStatus();
   showSearchPanel();
   return env;
 }
 
 downloadButton?.addEventListener("click", async () => {
   if (catalogMode && selectedCatalogMovie?.movieUrl) {
-    await downloadSelectedCatalogMovie("local");
+    await downloadSelectedCatalogMovie("nas");
     return;
   }
 
@@ -2057,7 +2479,7 @@ saveNasButton?.addEventListener("click", async () => {
   if (!result.ok) {
     if (result.needsCredentials) {
       pendingNasRetry = "save";
-      openNasConnectPanel(result.error);
+      showSettingsPanel({ focus: "nas", retryAction: "save", error: result.error });
       hideProgressDock();
       return;
     }
@@ -2100,6 +2522,35 @@ backButton.addEventListener("click", async () => {
   await window.streamApp.goBack();
   await refreshNavigationButtons();
 });
+homeButton?.addEventListener("click", async () => {
+  searchError.textContent = "";
+  hideBlockedPanel();
+  if (catalogMode) {
+    showCatalogView("home");
+    streamStatus.textContent = "Search the catalog to begin.";
+    return;
+  }
+  if (hideMovieDownloader) {
+    showAnimeHome();
+    await window.streamApp.setCatalogBrowserLocked(true);
+    const result = await window.streamApp.goHome();
+    if (!result.ok) {
+      searchError.textContent = result.error || "Could not go home.";
+      return;
+    }
+    await refreshNavigationButtons();
+    return;
+  }
+  showSearchPanel();
+  if (catalogHome) catalogHome.hidden = false;
+  streamStatus.textContent = "Home.";
+  const result = await window.streamApp.goHome();
+  if (!result.ok) {
+    searchError.textContent = result.error || "Could not go home.";
+    return;
+  }
+  await refreshNavigationButtons();
+});
 forwardButton.addEventListener("click", async () => {
   await window.streamApp.goForward();
   await refreshNavigationButtons();
@@ -2109,13 +2560,23 @@ reloadSiteButton.addEventListener("click", async () => {
   await window.streamApp.reloadCurrentPage();
 });
 openFolderButton.addEventListener("click", () => window.streamApp.openOutputFolder());
-connectNasButton.addEventListener("click", () => showNasConnectPanel());
-connectSiteButton.addEventListener("click", () => showSiteConnectPanel());
+openSettingsButton.addEventListener("click", () => showSettingsPanel());
+settingsBackdrop.addEventListener("click", () => hideSettingsPanel());
+settingsCloseButton.addEventListener("click", () => hideSettingsPanel());
+settingsForm.addEventListener("submit", (event) => event.preventDefault());
+settingsBrowseLocalButton.addEventListener("click", () => browseFolder("local"));
+settingsBrowseNasButton.addEventListener("click", () => browseFolder("nas"));
+settingsLocalFolderInput.addEventListener("input", scheduleSettingsStorageRefresh);
+settingsNasFolderInput.addEventListener("input", scheduleSettingsStorageRefresh);
+settingsSaveFoldersButton.addEventListener("click", () => saveMediaFolders());
+nasConnectSave.addEventListener("click", saveNasConnection);
+siteConnectSave.addEventListener("click", saveSiteConnection);
 syncToNasButton?.addEventListener("click", () => runLibrarySync());
-nasConnectForm.addEventListener("submit", saveNasConnection);
-siteConnectForm.addEventListener("submit", saveSiteConnection);
-nasConnectCancel.addEventListener("click", hideNasConnectPanel);
-siteConnectCancel.addEventListener("click", hideSiteConnectPanel);
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && settingsPanel && !settingsPanel.hidden) {
+    hideSettingsPanel();
+  }
+});
 
 function formatSiteLoginDebugDetail(entry) {
   if (!entry || typeof entry !== "object") return "";
@@ -2261,6 +2722,10 @@ browseHomeButton.addEventListener("click", async () => {
     streamStatus.textContent = "Search the catalog to begin.";
     return;
   }
+  if (hideMovieDownloader) {
+    await setSiteBrowseMode(true);
+    return;
+  }
   searchError.textContent = "";
   const result = await window.streamApp.goHome();
   if (!result.ok) {
@@ -2268,9 +2733,7 @@ browseHomeButton.addEventListener("click", async () => {
     return;
   }
   hideSearchPanel();
-  streamStatus.textContent = hideMovieDownloader
-    ? `Browsing ${siteLabel} — open a series and scan episodes in the sidebar.`
-    : `Browsing ${siteLabel} — pick a movie and play it.`;
+  streamStatus.textContent = `Browsing ${siteLabel} — pick a movie and play it.`;
   await refreshDetection();
   await refreshNavigationButtons();
 });
@@ -2296,6 +2759,10 @@ window.streamApp.onPageLoadSucceeded(() => {
     hideBlockedPanel();
     return;
   }
+  if (hideMovieDownloader && animeView !== "browse") {
+    hideBlockedPanel();
+    return;
+  }
   hideSearchPanel();
   hideBlockedPanel();
   refreshDetection();
@@ -2304,6 +2771,10 @@ window.streamApp.onPageLoadSucceeded(() => {
 
 window.streamApp.onBrowserContentVisible(() => {
   if (catalogMode && !siteBrowseMode) {
+    hideBlockedPanel();
+    return;
+  }
+  if (hideMovieDownloader && animeView !== "browse") {
     hideBlockedPanel();
     return;
   }
@@ -2324,6 +2795,10 @@ window.streamApp.onRedirectBlocked((details) => {
 
 window.streamApp.onShowSearchLanding(() => {
   hideBlockedPanel();
+  if (hideMovieDownloader) {
+    showAnimeHome({ animate: false });
+    return;
+  }
   showSearchPanel();
 });
 
@@ -2350,12 +2825,16 @@ window.streamApp.onQueueDebug((entry) => {
 
 addSearchToQueueButton.addEventListener("click", async () => {
   const movies = catalogMode ? catalogMovies : null;
+  if (catalogMode && !movies?.length && selectedCatalogMovie && !isCatalogTvItem(selectedCatalogMovie)) {
+    await addSelectedCatalogMovieToQueue("nas");
+    return;
+  }
   if (catalogMode && !movies?.length) {
     appendActivityLog("error", "Search the catalog first, then add results to the queue.");
     return;
   }
 
-  const result = await window.streamApp.addSearchResultsToQueue("local", movies);
+  const result = await window.streamApp.addSearchResultsToQueue("nas", movies);
   if (!result.ok) {
     appendActivityLog("error", result.error);
     return;
@@ -2374,11 +2853,11 @@ addSearchToQueueButton.addEventListener("click", async () => {
 
 addCurrentToQueueButton.addEventListener("click", async () => {
   if (catalogMode) {
-    await addSelectedCatalogMovieToQueue("local");
+    await addSelectedCatalogMovieToQueue("nas");
     return;
   }
 
-  const result = await window.streamApp.addCurrentToQueue("local");
+  const result = await window.streamApp.addCurrentToQueue("nas");
   if (!result.ok) {
     appendActivityLog("error", result.error);
     return;
@@ -2396,13 +2875,25 @@ if (catalogBackHome) {
 
 if (catalogBackLibraryHome) {
   catalogBackLibraryHome.addEventListener("click", () => {
+    if (hideMovieDownloader) {
+      showAnimeHome();
+      return;
+    }
     showCatalogView("home");
     streamStatus.textContent = "Search the catalog to begin.";
   });
 }
 
 if (openLibraryButton) {
-  openLibraryButton.addEventListener("click", () => {
+  openLibraryButton.addEventListener("click", async () => {
+    if (hideMovieDownloader) {
+      await window.streamApp.setCatalogBrowserLocked(true);
+      if (animeView === "browse") {
+        await window.streamApp.goHome({ hideBrowser: true });
+      }
+      showAnimeLibrary();
+      return;
+    }
     if (!catalogMode) return;
     showCatalogView("library");
     streamStatus.textContent = "Your downloaded movies and TV shows.";
@@ -2422,7 +2913,7 @@ if (catalogQueueAll) {
       appendActivityLog("error", "No search results to queue.");
       return;
     }
-    const result = await window.streamApp.addSearchResultsToQueue("local", catalogMovies);
+    const result = await window.streamApp.addSearchResultsToQueue("nas", catalogMovies);
     if (!result.ok) {
       appendActivityLog("error", result.error);
       return;
@@ -2440,7 +2931,7 @@ if (catalogDownloadNas) {
   catalogDownloadNas.addEventListener("click", () => downloadSelectedCatalogMovie("nas"));
 }
 if (catalogAddQueue) {
-  catalogAddQueue.addEventListener("click", () => addSelectedCatalogMovieToQueue("local"));
+  catalogAddQueue.addEventListener("click", () => addSelectedCatalogMovieToQueue("nas"));
 }
 if (catalogTvSeasonSelect) {
   catalogTvSeasonSelect.addEventListener("change", async () => {
@@ -2478,10 +2969,25 @@ if (queueTvSeasonSelect) {
   });
 }
 
-async function startQueueDownload(destination) {
+async function startQueueDownload(_destination) {
+  const destination = "nas";
+  if (hideMovieDownloader) {
+    startDownloadQueueLocalButton.disabled = true;
+    startDownloadQueueNasButton.disabled = true;
+    const filled = await fillAnimeQueueFromPage(destination);
+    if (!filled.ok) {
+      appendActivityLog("error", filled.error);
+      streamStatus.textContent = filled.error || "Could not add episodes to the queue.";
+      await refreshDownloadQueue();
+      return;
+    }
+  }
+
   const result = await window.streamApp.startDownloadQueue(destination);
   if (!result.ok) {
     appendActivityLog("error", result.error);
+    streamStatus.textContent = result.error || "Could not start the queue.";
+    await refreshDownloadQueue();
     return;
   }
 
@@ -2489,6 +2995,49 @@ async function startQueueDownload(destination) {
   appendActivityLog("info", `Queue download started → ${target}`);
   if (progressHideTimer) clearTimeout(progressHideTimer);
   progressDock.hidden = false;
+  updateProgressDock({
+    state: "running",
+    phase: `Queue → ${target}`,
+    indeterminate: true,
+    destination
+  });
+}
+
+async function fillAnimeQueueFromPage(destination) {
+  const current = await window.streamApp.getDownloadQueue();
+  const counts = current?.snapshot?.counts || {};
+  if ((counts.pending || 0) + (counts.failed || 0) > 0) return { ok: true };
+
+  enterAnimeBrowse("Scanning this series into the queue...");
+  await window.streamApp.setCatalogBrowserLocked(false);
+
+  appendActivityLog("info", "Scanning the current series for episodes...");
+  const scan = await window.streamApp.scanTvShow(null, null);
+  if (!scan.ok) {
+    return {
+      ok: false,
+      error: scan.error || "Open a series page, then click Download or Scan Series."
+    };
+  }
+  renderTvShowPlan(scan.plan);
+
+  const added = await window.streamApp.addTvPlanToQueue(destination);
+  if (!added.ok) return added;
+
+  const addedCount = added.added?.length || 0;
+  const skippedCount = added.skipped?.length || 0;
+  if (!addedCount && !skippedCount) {
+    return { ok: false, error: "No episodes were added. Open a series page, then try again." };
+  }
+
+  appendActivityLog(
+    "success",
+    addedCount
+      ? `Added ${addedCount} episode${addedCount === 1 ? "" : "s"} to the queue`
+      : "Those episodes are already in the queue."
+  );
+  await refreshDownloadQueue();
+  return { ok: true };
 }
 
 startDownloadQueueLocalButton.addEventListener("click", () => startQueueDownload("local"));
@@ -2526,7 +3075,23 @@ queueDebugCopyButton.addEventListener("click", async () => {
 });
 
 async function setSiteBrowseMode(enabled) {
-  if (hideMovieDownloader || !catalogMode) {
+  if (hideMovieDownloader) {
+    if (enabled) {
+      enterAnimeBrowse();
+      await window.streamApp.setCatalogBrowserLocked(false);
+      await window.streamApp.goHome({ browse: true });
+      await refreshNavigationButtons();
+      reportChromeLayout();
+      return;
+    }
+    showAnimeHome();
+    await window.streamApp.setCatalogBrowserLocked(true);
+    await window.streamApp.goHome();
+    reportChromeLayout();
+    return;
+  }
+
+  if (!catalogMode) {
     siteBrowseMode = false;
     if (browseSiteForTvButton) browseSiteForTvButton.hidden = true;
     if (backToCatalogButton) backToCatalogButton.hidden = true;
@@ -2578,7 +3143,9 @@ function renderTvShowPlan(plan = tvShowPlan, payload = {}) {
 
   if (!plan) {
     if (tvShowSummary) {
-      tvShowSummary.textContent = "Browse a season page, scan it, then add episodes here with movies.";
+      tvShowSummary.textContent = hideMovieDownloader
+        ? "Open a series page, scan episodes, then add them to the queue."
+        : "Browse a season page, scan it, then add episodes here with movies.";
     }
     if (tvShowEpisodeList) {
       tvShowEpisodeList.hidden = true;
@@ -2691,13 +3258,18 @@ if (backToCatalogButton) {
 
 scanTvShowButton.addEventListener("click", async () => {
   const season = queueTvSeasonSelect && !queueTvSeasonRow?.hidden ? getSelectedQueueTvSeason() : null;
+  if (hideMovieDownloader) {
+    enterAnimeBrowse("Scanning series...");
+    await window.streamApp.setCatalogBrowserLocked(false);
+  }
   appendActivityLog(
     "info",
-    season ? `Scanning season ${season} for episodes...` : "Scanning the current season for episodes..."
+    season ? `Scanning season ${season} for episodes...` : "Scanning the current series for episodes..."
   );
   const result = await window.streamApp.scanTvShow(null, season);
   if (!result.ok) {
     appendActivityLog("error", result.error);
+    streamStatus.textContent = result.error || "Scan failed.";
     return;
   }
 
@@ -2707,6 +3279,7 @@ scanTvShowButton.addEventListener("click", async () => {
     "success",
     `Scanned "${result.plan.showTitle}" season ${scannedSeason} (${result.plan.episodes.length} episode${result.plan.episodes.length === 1 ? "" : "s"})`
   );
+  streamStatus.textContent = `Scanned ${result.plan.episodes.length} episode${result.plan.episodes.length === 1 ? "" : "s"} — add them to the queue.`;
 });
 
 clearTvShowPlanButton.addEventListener("click", async () => {
@@ -2718,9 +3291,24 @@ clearTvShowPlanButton.addEventListener("click", async () => {
   renderTvShowPlan(null);
 });
 
+if (addCurrentEpisodeButton) {
+  addCurrentEpisodeButton.addEventListener("click", async () => {
+    const result = await window.streamApp.addCurrentEpisodeToQueue("nas");
+    if (!result.ok) {
+      appendActivityLog("error", result.error);
+      streamStatus.textContent = result.error || "Could not add this episode.";
+      return;
+    }
+    appendActivityLog("success", `Added "${result.item.title}" to the queue`);
+    window.shellMotion?.pulseQueueChrome?.();
+    await refreshDownloadQueue();
+    streamStatus.textContent = `Queued ${result.item.title}. Click Download to save to the NAS.`;
+  });
+}
+
 if (addTvToQueueButton) {
   addTvToQueueButton.addEventListener("click", async () => {
-    const result = await window.streamApp.addTvPlanToQueue("local");
+    const result = await window.streamApp.addTvPlanToQueue("nas");
     if (!result.ok) {
       appendActivityLog("error", result.error);
       return;
@@ -2753,6 +3341,12 @@ window.streamApp.onStreamCaptureReset(() => {
     }
     return;
   }
+  if (hideMovieDownloader) {
+    if (animeView === "browse") {
+      streamStatus.textContent = "Stream capture reset — keep the episode playing to recapture.";
+    }
+    return;
+  }
   streamStatus.textContent =
     "Stream capture reset — pause/play or seek the video to refresh, then download again.";
   setToolbarDisabled(downloadButton, true);
@@ -2778,12 +3372,10 @@ initEnvironment().then((env) => {
     "info",
     env?.startupLog ||
       (hideMovieDownloader
-        ? "Anime mode ready. Open a season page, scan it, then download episodes from the sidebar."
+        ? "Anime mode ready. Search or browse Aniwave, scan a series, then queue episodes."
         : "App ready. Open a movie and use the site's Download links, or play for HLS capture.")
   );
-  if (!hideMovieDownloader) {
-    refreshDownloadQueue();
-  }
+  refreshDownloadQueue();
 });
 setupChromeLayoutObserver();
 window.streamApp.getTvShowPlan().then((result) => {
@@ -2791,7 +3383,7 @@ window.streamApp.getTvShowPlan().then((result) => {
 });
 refreshDetection();
 refreshNavigationButtons();
-refreshLibrary(true);
+refreshLibrary();
 
 setInterval(async () => {
   await refreshDetection();

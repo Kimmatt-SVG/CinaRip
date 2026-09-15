@@ -158,9 +158,18 @@ function setupEmbedCompatibility(session, contents) {
 
   contents.on("dom-ready", () => injectAllFrames(contents));
 
-  contents.on("did-frame-finish-load", (_event, _isMainFrame, frameProcessId, frameRoutingId) => {
+  contents.on("did-frame-finish-load", (_event, isMainFrame, frameProcessId, frameRoutingId) => {
     const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
-    injectEmbedCompatibility(frame);
+    if (!frame || frame.isDestroyed()) return;
+    let frameUrl = "";
+    try {
+      frameUrl = frame.url || "";
+    } catch {
+      return;
+    }
+    if (isMainFrame || hostNeedsEmbedUa(frameUrl)) {
+      injectEmbedCompatibility(frame);
+    }
   });
 }
 

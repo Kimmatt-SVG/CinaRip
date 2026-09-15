@@ -18,28 +18,35 @@ const {
   extractMovieIdFromUrl
 } = require("./lib/tornado-download-scraper");
 const { FfmpegRunner, findFfmpeg, outputDirectory, safeOutputName, streamHeadersForDownload } = require("./lib/ffmpeg-runner");
-const { loadNasConfig, ensureNasFolder } = require("./lib/nas-config");
+const { loadNasConfig, saveNasConfig, ensureNasFolder } = require("./lib/nas-config");
+const { saveLocalConfig, ensureLocalFolder, defaultLocalVideoFolder } = require("./lib/local-config");
+
+function nasOutputAccess() {
+  return ensureNasFolder(loadNasConfig().videoFolder);
+}
+const { getFolderStorage } = require("./lib/folder-storage");
 const { loadNasCredentials, saveNasCredentials, prepareNasAccess } = require("./lib/nas-auth");
 const { setupAdblocker, isAdblockerEnabled, syncAdblockerForUrl } = require("./lib/adblocker");
 const { setupNavigationGuard } = require("./lib/navigation-guard");
 const { setupEmbedCompatibility } = require("./lib/embed-compatibility");
-const { setupChromeCompatibility } = require("./lib/chrome-compat");
+const { setupChromeCompatibility, CHROME_USER_AGENT } = require("./lib/chrome-compat");
 const { outputNameFromPageUrl } = require("./lib/page-utils");
 const { resolveBestFromCandidates, diagnoseStreamCandidates } = require("./lib/hls-quality");
 const { findFfprobe, probeStream } = require("./lib/stream-probe");
 const { streamDebug } = require("./lib/stream-debug");
-const { saveArtworkForPage, saveShowPoster, extractArtworkUrl, downloadArtwork } = require("./lib/artwork");
+const { saveArtworkForPage, saveArtworkFromUrl, saveShowPoster, extractArtworkUrl } = require("./lib/artwork");
 const { findPosterForVideo, embedPosterInVideoAsync } = require("./lib/poster-utils");
 const { SITE_HOME_URL, SITE_BASE_URL, SITE_LOGIN_URL, buildSearchUrl, getSiteProfile } = require("./lib/site-config");
 const { isAnimeMode } = require("./lib/site-profiles");
-const { isAniwaveUrl, prepareAniwavePlayer, inspectAniwavePlayer, waitForAniwaveServers, buildAniwaveServerAttempts, extractEmbedStreamFromFrames } = require("./lib/aniwave-scraper");
+const { isAniwaveUrl, isAniwaveHost, prepareAniwavePlayer, inspectAniwavePlayer, waitForAniwaveServers, buildAniwaveServerAttempts, extractEmbedStreamFromFrames } = require("./lib/aniwave-scraper");
 const { sessionHlsProxy, shouldProxyStreamUrl } = require("./lib/session-hls-proxy");
 const { loadSiteCredentials, saveSiteCredentials } = require("./lib/site-auth");
-const { setupSiteAutoLogin } = require("./lib/site-auto-login");
+const { setupSiteAutoLogin, sessionHasTornadoIdentity } = require("./lib/site-auto-login");
 const { listDownloadedMovies, findShowPoster, posterUrlForPath } = require("./lib/download-library");
 const { syncLocalMoviesToNas } = require("./lib/library-sync");
 const { cleanupStaleDownloadArtifacts } = require("./lib/download-cleanup");
 const { DownloadQueue, titleFromMovieUrl, normalizeMovieUrl } = require("./lib/download-queue");
+const { loadQueueState, saveQueueState } = require("./lib/queue-store");
 const { canonicalMoviePageUrl } = require("./lib/movie-url-utils");
 const { processDownloadQueue } = require("./lib/queue-runner");
 const { createQueueDebugger, recentQueueDebugEntries } = require("./lib/queue-debug");
@@ -68,7 +75,7 @@ const {
 } = require("./lib/tv-url-utils");
 
 const appProfile = getSiteProfile();
-let catalogBrowserLocked = !Boolean(appProfile.hideMovieDownloader);
+let catalogBrowserLocked = true;
 
 const WARP_DOWNLOAD_URL = "https://one.one.one.one/";
 const WARP_WINGET_COMMAND =
@@ -100,6 +107,7 @@ const ffmpegRunner = new FfmpegRunner();
 const downloadQueue = new DownloadQueue();
 let librarySyncRunning = false;
 let queueProcessing = false;
+let queueRecovery = { restored: 0, interrupted: 0, savedAt: 0 };
 let tvShowPlan = null;
 let tvShowProcessing = false;
 let tvShowCancelRequested = false;
@@ -180,9 +188,33 @@ function notifyTvShowUpdate(payload = {}) {
   });
 }
 
+function persistDownloadQueue() {
+  try {
+    saveQueueState(downloadQueue.persistableItems());
+  } catch (error) {
+    streamDebug.log("queue", "Could not save queue state", {
+      error: error.message || String(error)
+    });
+  }
+}
+
+function restoreDownloadQueue() {
+  const saved = loadQueueState();
+  const result = downloadQueue.restore(saved.items);
+  queueRecovery = {
+    restored: result.restored,
+    interrupted: result.interrupted,
+    savedAt: saved.savedAt || 0
+  };
+  persistDownloadQueue();
+  return result;
+}
+
 function notifyQueueUpdate(payload = {}) {
+  persistDownloadQueue();
   sendToRenderer("download-queue-updated", {
     snapshot: downloadQueue.snapshot(),
+    recovery: queueRecovery,
     ...payload
   });
 }
@@ -202,7 +234,88 @@ function setupTornadoSearchScraper(contents) {
   contents.on("did-finish-load", inject);
 }
 
-function loadMoviePageForQueue(url, timeoutMs = 90_000) {
+let pageLoadGeneration = 0;
+
+function beginPageNavigation(contents) {
+  pageLoadGeneration += 1;
+  if (contents && !contents.isDestroyed()) {
+    try {
+      contents.stop();
+    } catch {
+      // Ignore stop failures on a busy BrowserView.
+    }
+  }
+  return pageLoadGeneration;
+}
+
+function waitForPageLoad(contents, url, options = {}) {
+  const timeoutMs = Number(options.timeoutMs) || 45_000;
+  const settleMs = Number(options.settleMs) || 0;
+  const generation = beginPageNavigation(contents);
+
+  return new Promise((resolve, reject) => {
+    if (!contents || contents.isDestroyed()) {
+      reject(new Error("Browser is not ready."));
+      return;
+    }
+
+    let settled = false;
+    let settleTimer = null;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (settleTimer) clearTimeout(settleTimer);
+      contents.removeListener("did-finish-load", onFinishLoad);
+      contents.removeListener("did-fail-load", onFailLoad);
+    };
+
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+
+    const stillCurrent = () => generation === pageLoadGeneration && contents && !contents.isDestroyed();
+
+    const onFinishLoad = () => {
+      if (!stillCurrent()) {
+        finish(new Error("Navigation cancelled."));
+        return;
+      }
+      if (settleMs <= 0) {
+        finish();
+        return;
+      }
+      settleTimer = setTimeout(() => {
+        if (!stillCurrent()) finish(new Error("Navigation cancelled."));
+        else finish();
+      }, settleMs);
+    };
+
+    const onFailLoad = (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      if (!stillCurrent()) {
+        finish(new Error("Navigation cancelled."));
+        return;
+      }
+      if (errorCode === ERR_ABORTED) return;
+      finish(new Error(errorDescription || `Page failed to load (${errorCode})`));
+    };
+
+    const timer = setTimeout(() => finish(new Error("Page load timed out.")), timeoutMs);
+
+    contents.on("did-finish-load", onFinishLoad);
+    contents.on("did-fail-load", onFailLoad);
+    contents.loadURL(url).catch((error) => {
+      if (!stillCurrent()) finish(new Error("Navigation cancelled."));
+      else finish(error);
+    });
+  });
+}
+
+async function loadMoviePageForQueue(url, timeoutMs = 90_000) {
   const targetUrl = canonicalMoviePageUrl(url) || normalizeMovieUrl(url);
   const movieId = extractMovieIdFromUrl(targetUrl);
 
@@ -212,105 +325,54 @@ function loadMoviePageForQueue(url, timeoutMs = 90_000) {
     movieId
   });
 
-  return new Promise((resolve, reject) => {
-    if (!browserView?.webContents || browserView.webContents.isDestroyed()) {
-      const error = new Error("Browser is not ready.");
-      queueDebug("load-fail", error.message, { targetUrl, movieId });
-      reject(error);
-      return;
+  const contents = browserView?.webContents;
+  if (!contents || contents.isDestroyed()) {
+    const error = new Error("Browser is not ready.");
+    queueDebug("load-fail", error.message, { targetUrl, movieId });
+    throw error;
+  }
+
+  resetStreamCapture();
+  if (isCatalogMode()) hideBrowserView();
+  else ensureBrowserVisible();
+
+  try {
+    await waitForPageLoad(contents, targetUrl, { timeoutMs, settleMs: 2200 });
+    const pageCheck = await contents.executeJavaScript(`({
+      url: location.href,
+      pathname: location.pathname,
+      title: document.title || "",
+      isMovie: /\\/movie\\//i.test(location.pathname),
+      hasJQuery: Boolean(window.jQuery),
+      hasPlayer: Boolean(window.Player),
+      bodyPreview: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 240),
+      isError: /something went wrong|please report this problem|oops/i.test((document.body?.innerText || "").toLowerCase())
+    })`);
+
+    queueDebug("load-check", pageCheck.isError ? "Site error page detected" : "Page check complete", {
+      targetUrl,
+      movieId,
+      pageCheck
+    });
+
+    if (pageCheck.isError) {
+      throw new Error(
+        `Movie page returned a site error. URL=${pageCheck.url || targetUrl} title="${pageCheck.title || ""}"`
+      );
     }
-
-    const contents = browserView.webContents;
-    let settled = false;
-
-    const cleanup = () => {
-      clearTimeout(timer);
-      contents.removeListener("did-finish-load", onFinishLoad);
-      contents.removeListener("did-fail-load", onFailLoad);
-    };
-
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) {
-        queueDebug("load-fail", error.message, { targetUrl, movieId });
-        reject(error);
-      } else {
-        queueDebug("load-ok", "Movie page loaded", { targetUrl, movieId });
-        resolve();
-      }
-    };
-
-    const onFinishLoad = () => {
-      setTimeout(async () => {
-        try {
-          const pageCheck = await contents.executeJavaScript(`({
-            url: location.href,
-            pathname: location.pathname,
-            title: document.title || "",
-            isMovie: /\\/movie\\//i.test(location.pathname),
-            hasJQuery: Boolean(window.jQuery),
-            hasPlayer: Boolean(window.Player),
-            bodyPreview: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 240),
-            isError: /something went wrong|please report this problem|oops/i.test((document.body?.innerText || "").toLowerCase())
-          })`);
-
-          queueDebug("load-check", pageCheck.isError ? "Site error page detected" : "Page check complete", {
-            targetUrl,
-            movieId,
-            pageCheck
-          });
-
-          if (pageCheck.isError) {
-            finish(
-              new Error(
-                `Movie page returned a site error. URL=${pageCheck.url || targetUrl} title="${pageCheck.title || ""}"`
-              )
-            );
-            return;
-          }
-          if (!pageCheck.isMovie) {
-            finish(
-              new Error(
-                `Did not land on a movie page. Got ${pageCheck.pathname || pageCheck.url || "unknown URL"}`
-              )
-            );
-            return;
-          }
-          finish();
-        } catch (error) {
-          finish(error);
-        }
-      }, 2200);
-    };
-
-    const onFailLoad = (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      if (!isMainFrame || errorCode === ERR_ABORTED) return;
-      queueDebug("load-fail", "Navigation failed", {
-        targetUrl,
-        movieId,
-        errorCode,
-        errorDescription,
-        validatedURL
-      });
-      finish(new Error(errorDescription || `Page failed to load (${errorCode})`));
-    };
-
-    const timer = setTimeout(() => {
-      finish(new Error("Movie page load timed out."));
-    }, timeoutMs);
-
-    contents.on("did-finish-load", onFinishLoad);
-    contents.on("did-fail-load", onFailLoad);
-
-    resetStreamCapture();
-    ensureBrowserVisible();
-    contents.loadURL(targetUrl).catch((error) => finish(error));
-  });
+    if (!pageCheck.isMovie) {
+      throw new Error(
+        `Did not land on a movie page. Got ${pageCheck.pathname || pageCheck.url || "unknown URL"}`
+      );
+    }
+    queueDebug("load-ok", "Movie page loaded", { targetUrl, movieId });
+  } catch (error) {
+    queueDebug("load-fail", error.message || String(error), { targetUrl, movieId });
+    throw error;
+  }
 }
 
-function loadContentPageForDownload(url, timeoutMs = 90_000) {
+async function loadContentPageForDownload(url, timeoutMs = 90_000) {
   const targetUrl = canonicalMoviePageUrl(url) || canonicalContentUrl(url) || normalizeMovieUrl(url) || url;
   const contentId = extractMovieIdFromUrl(targetUrl) || extractGetbuttonId(targetUrl);
 
@@ -320,84 +382,42 @@ function loadContentPageForDownload(url, timeoutMs = 90_000) {
     contentId
   });
 
-  return new Promise((resolve, reject) => {
-    if (!browserView?.webContents || browserView.webContents.isDestroyed()) {
-      const error = new Error("Browser is not ready.");
-      queueDebug("tv-load-fail", error.message, { targetUrl, contentId });
-      reject(error);
-      return;
+  const contents = browserView?.webContents;
+  if (!contents || contents.isDestroyed()) {
+    const error = new Error("Browser is not ready.");
+    queueDebug("tv-load-fail", error.message, { targetUrl, contentId });
+    throw error;
+  }
+
+  resetStreamCapture();
+  if (isCatalogMode()) hideBrowserView();
+  else ensureBrowserVisible();
+
+  try {
+    await waitForPageLoad(contents, targetUrl, { timeoutMs, settleMs: 2200 });
+    const pageCheck = await contents.executeJavaScript(`({
+      url: location.href,
+      pathname: location.pathname,
+      title: document.title || "",
+      isContent: /\\/(?:movie|tv-series|tv|serie|series|episode|episodes|watch)\\//i.test(location.pathname),
+      hasJQuery: Boolean(window.jQuery),
+      bodyPreview: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 240),
+      isError: /something went wrong|please report this problem|oops/i.test((document.body?.innerText || "").toLowerCase())
+    })`);
+
+    if (pageCheck.isError) {
+      throw new Error(`Content page returned a site error (${pageCheck.url || targetUrl}).`);
     }
-
-    const contents = browserView.webContents;
-    let settled = false;
-
-    const cleanup = () => {
-      clearTimeout(timer);
-      contents.removeListener("did-finish-load", onFinishLoad);
-      contents.removeListener("did-fail-load", onFailLoad);
-    };
-
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) {
-        queueDebug("tv-load-fail", error.message, { targetUrl, contentId });
-        reject(error);
-      } else {
-        queueDebug("tv-load-ok", "Content page loaded", { targetUrl, contentId });
-        resolve();
-      }
-    };
-
-    const onFinishLoad = () => {
-      setTimeout(async () => {
-        try {
-          const pageCheck = await contents.executeJavaScript(`({
-            url: location.href,
-            pathname: location.pathname,
-            title: document.title || "",
-            isContent: /\\/(?:movie|tv-series|tv|serie|series|episode|episodes|watch)\\//i.test(location.pathname),
-            hasJQuery: Boolean(window.jQuery),
-            bodyPreview: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 240),
-            isError: /something went wrong|please report this problem|oops/i.test((document.body?.innerText || "").toLowerCase())
-          })`);
-
-          if (pageCheck.isError) {
-            finish(new Error(`Content page returned a site error (${pageCheck.url || targetUrl}).`));
-            return;
-          }
-          if (!pageCheck.isContent) {
-            finish(
-              new Error(
-                `Did not land on a movie or TV episode page (${pageCheck.pathname || pageCheck.url || "unknown"}).`
-              )
-            );
-            return;
-          }
-          finish();
-        } catch (error) {
-          finish(error);
-        }
-      }, 2200);
-    };
-
-    const onFailLoad = (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      if (!isMainFrame || errorCode === ERR_ABORTED) return;
-      finish(new Error(errorDescription || `Page failed to load (${errorCode})`));
-    };
-
-    const timer = setTimeout(() => {
-      finish(new Error("Content page load timed out."));
-    }, timeoutMs);
-
-    contents.on("did-finish-load", onFinishLoad);
-    contents.on("did-fail-load", onFailLoad);
-
-    resetStreamCapture();
-    ensureBrowserVisible();
-    contents.loadURL(targetUrl).catch((error) => finish(error));
-  });
+    if (!pageCheck.isContent) {
+      throw new Error(
+        `Did not land on a movie or TV episode page (${pageCheck.pathname || pageCheck.url || "unknown"}).`
+      );
+    }
+    queueDebug("tv-load-ok", "Content page loaded", { targetUrl, contentId });
+  } catch (error) {
+    queueDebug("tv-load-fail", error.message || String(error), { targetUrl, contentId });
+    throw error;
+  }
 }
 
 function sleep(ms) {
@@ -643,22 +663,17 @@ async function fetchAniwaveEpisodeStream(contents, episode, options = {}) {
   };
 }
 
-async function resolveQueueOutputDir(destination = "local") {
-  let outputDir = outputDirectory();
-  if (destination === "nas") {
-    const nas = loadNasConfig();
-    const access = ensureNasFolder(nas.videoFolder);
-    if (!access.ok) {
-      return { ok: false, error: access.error, needsCredentials: Boolean(access.needsCredentials) };
-    }
-    outputDir = access.path;
+async function resolveQueueOutputDir() {
+  const access = nasOutputAccess();
+  if (!access.ok) {
+    return { ok: false, error: access.error, needsCredentials: Boolean(access.needsCredentials) };
   }
-  return { ok: true, outputDir };
+  return { ok: true, outputDir: access.path };
 }
 
 async function processQueueEpisodeItem(item, queue) {
-  const destination = item.destination === "nas" ? "nas" : "local";
-  const resolved = await resolveQueueOutputDir(destination);
+  const destination = "nas";
+  const resolved = await resolveQueueOutputDir();
   if (!resolved.ok) {
     return { ok: false, error: resolved.error };
   }
@@ -720,7 +735,12 @@ async function processQueueEpisodeItem(item, queue) {
       { preferDub: true }
     );
   } else {
-    const result = await fetchFreshDirectDownloadLink(contents, { movieUrl: item.movieUrl });
+    const result = await fetchFreshDirectDownloadLink(contents, {
+      movieUrl: item.movieUrl,
+      timeoutMs: 20_000,
+      minQualityHeight: 720,
+      shouldContinue: () => !queue.cancelRequested
+    });
     if (!result.ok || !result.best?.url) {
       return { ok: false, error: result.error || "Could not generate episode download link." };
     }
@@ -853,17 +873,13 @@ async function runTvShowDownloadJob(destination = "local") {
   ensureBrowserVisible();
   notifyTvShowUpdate({ phase: "starting" });
 
-  const nas = loadNasConfig();
-  let outputDir = outputDirectory();
-  if (destination === "nas") {
-    const access = ensureNasFolder(nas.videoFolder);
-    if (!access.ok) {
-      tvShowProcessing = false;
-      notifyTvShowUpdate({ phase: "idle" });
-      return { ok: false, error: access.error, needsCredentials: Boolean(access.needsCredentials) };
-    }
-    outputDir = access.path;
+  const access = nasOutputAccess();
+  if (!access.ok) {
+    tvShowProcessing = false;
+    notifyTvShowUpdate({ phase: "idle" });
+    return { ok: false, error: access.error, needsCredentials: Boolean(access.needsCredentials) };
   }
+  const outputDir = access.path;
 
   const ffmpegPath = findFfmpeg();
   const session = browserView?.webContents?.session;
@@ -871,7 +887,7 @@ async function runTvShowDownloadJob(destination = "local") {
 
   try {
     const result = await runTvShowDownload(tvShowPlan, {
-      outputRoot: outputDirectory(),
+      outputRoot: outputDir,
       outputDir,
       contentSubfolder: useAniwaveHls ? null : "TV Shows",
       runner: ffmpegRunner,
@@ -974,7 +990,13 @@ async function runDownloadQueue() {
   }
 
   queueProcessing = true;
-  ensureBrowserVisible();
+  const previousCatalogLock = catalogBrowserLocked;
+  if (isCatalogMode()) {
+    catalogBrowserLocked = true;
+    hideBrowserView();
+  } else if (appProfile.hideMovieDownloader) {
+    catalogBrowserLocked = false;
+  }
   queueDebug("queue-start", "Queue run started", {
     pending: downloadQueue.snapshot().counts.pending,
     logPath: streamDebug.logPath()
@@ -986,7 +1008,12 @@ async function runDownloadQueue() {
       loadPage: loadMoviePageForQueue,
       fetchFreshLink: async (item) => {
         const contents = browserView?.webContents;
-        const result = await fetchFreshDirectDownloadLink(contents, { movieUrl: item.movieUrl });
+        const result = await fetchFreshDirectDownloadLink(contents, {
+          movieUrl: item.movieUrl,
+          timeoutMs: 20_000,
+          minQualityHeight: 720,
+          shouldContinue: () => !downloadQueue.cancelRequested
+        });
         if (!result.ok || !result.best) {
           queueDebug("item-fail", `No fresh link for ${item.title}`, {
             itemId: item.id,
@@ -997,8 +1024,12 @@ async function runDownloadQueue() {
         }
         return { ok: true, link: result.best };
       },
-      startDownload: (destination) =>
-        startStreamDownload(destination, { directOnly: true, skipLinkPrepare: true }),
+      startDownload: (destination, prepared) =>
+        startStreamDownload(destination, {
+          directOnly: true,
+          skipLinkPrepare: true,
+          preparedLink: prepared?.link || prepared
+        }),
       processEpisode: (item, queue) => processQueueEpisodeItem(item, queue),
       runner: ffmpegRunner,
       clearJob: () => ffmpegRunner.clearJob(),
@@ -1008,8 +1039,11 @@ async function runDownloadQueue() {
     });
   } finally {
     queueProcessing = false;
+    if (isCatalogMode()) {
+      catalogBrowserLocked = previousCatalogLock;
+      if (catalogBrowserLocked) hideBrowserView();
+    }
     queueDebug("queue-finish", "Queue run finished", downloadQueue.snapshot().counts);
-    notifyQueueUpdate({ phase: "idle" });
   }
 }
 
@@ -1106,9 +1140,17 @@ function isCatalogMode() {
   return !Boolean(appProfile.hideMovieDownloader);
 }
 
+function isCustomShell() {
+  return isCatalogMode() || Boolean(appProfile.hideMovieDownloader);
+}
+
+function isBrowserLocked() {
+  return isCustomShell() && catalogBrowserLocked;
+}
+
 function showBrowserView() {
   if (!mainWindow || !browserView) return;
-  if (isCatalogMode() && catalogBrowserLocked) {
+  if (isBrowserLocked()) {
     hideBrowserView();
     return;
   }
@@ -1118,7 +1160,7 @@ function showBrowserView() {
 }
 
 function ensureBrowserVisible() {
-  if (isCatalogMode() && catalogBrowserLocked) {
+  if (isBrowserLocked()) {
     hideBrowserView();
     return;
   }
@@ -1137,6 +1179,7 @@ function hideBrowserView() {
 
 function showSearchLanding() {
   if (!mainWindow || !browserView) return;
+  if (isCustomShell()) catalogBrowserLocked = true;
   resetStreamCapture();
   hideBrowserView();
   mainWindow.webContents.send("show-search-landing");
@@ -1147,44 +1190,9 @@ function delay(ms) {
 }
 
 function loadUrlAndWait(contents, url, options = {}) {
-  const timeoutMs = Number(options.timeoutMs) || 45_000;
-  const settleMs = Number(options.settleMs) || 1200;
-
-  return new Promise((resolve, reject) => {
-    if (!contents || contents.isDestroyed()) {
-      reject(new Error("Browser is not ready."));
-      return;
-    }
-
-    let settled = false;
-    const cleanup = () => {
-      clearTimeout(timer);
-      contents.removeListener("did-finish-load", onFinishLoad);
-      contents.removeListener("did-fail-load", onFailLoad);
-    };
-
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) reject(error);
-      else resolve();
-    };
-
-    const onFinishLoad = () => {
-      setTimeout(() => finish(), settleMs);
-    };
-
-    const onFailLoad = (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
-      if (!isMainFrame || errorCode === ERR_ABORTED) return;
-      finish(new Error(errorDescription || `Page failed to load (${errorCode})`));
-    };
-
-    const timer = setTimeout(() => finish(new Error("Page load timed out.")), timeoutMs);
-
-    contents.on("did-finish-load", onFinishLoad);
-    contents.on("did-fail-load", onFailLoad);
-    contents.loadURL(url).catch((error) => finish(error));
+  return waitForPageLoad(contents, url, {
+    timeoutMs: Number(options.timeoutMs) || 45_000,
+    settleMs: Number(options.settleMs) || 1200
   });
 }
 
@@ -1376,6 +1384,7 @@ async function createWindow() {
       partition: appProfile.browserPartition
     }
   });
+  mainWindow.on("close", () => persistDownloadQueue());
 
   browserView = new BrowserView({
     webPreferences: {
@@ -1386,7 +1395,7 @@ async function createWindow() {
     }
   });
 
-  if (!isCatalogMode()) {
+  if (!isBrowserLocked()) {
     mainWindow.setBrowserView(browserView);
     layoutBrowserView();
   }
@@ -1429,6 +1438,13 @@ async function createWindow() {
   setupTornadoDownloadScraper(browserView.webContents);
   setupTornadoSearchScraper(browserView.webContents);
   setupTvShowScraper(browserView.webContents);
+  browserView.webContents.setMaxListeners(20);
+  browserView.webContents.on("render-process-gone", (_event, details) => {
+    streamDebug.log("crash", "Renderer process gone", details);
+  });
+  browserView.webContents.on("unresponsive", () => {
+    streamDebug.log("crash", "BrowserView became unresponsive");
+  });
 
   browserView.webContents.on("console-message", (_event, _level, message) => {
     const directMarker = "[TornadoDirectDownload]";
@@ -1535,9 +1551,10 @@ ipcMain.handle("open-stream-debug-log", () => {
   return { ok: true, path: logPath };
 });
 
-ipcMain.handle("get-environment", () => {
+ipcMain.handle("get-environment", async () => {
   const nas = loadNasConfig();
   const browserSession = browserView?.webContents?.session;
+  const siteLoggedIn = await sessionHasTornadoIdentity(browserSession, SITE_HOME_URL);
   return {
     profileId: appProfile.id,
     profileLabel: appProfile.brandLabel,
@@ -1545,9 +1562,12 @@ ipcMain.handle("get-environment", () => {
     siteHomeUrl: SITE_HOME_URL,
     siteLoginUrl: SITE_LOGIN_URL,
     siteUsername: loadSiteCredentials().username || null,
+    siteLoggedIn,
+    siteHasIdentityCookie: siteLoggedIn,
     siteAutoLoginEnabled: Boolean(loadSiteCredentials().autoLogin),
     ffmpegPath: findFfmpeg(),
     outputDirectory: outputDirectory(),
+    defaultLocalVideoFolder: defaultLocalVideoFolder(),
     nasPortalUrl: nas.portalUrl,
     nasVideoFolder: nas.videoFolder,
     nasUsername: loadNasCredentials().username || null,
@@ -1564,6 +1584,68 @@ ipcMain.handle("get-environment", () => {
     tvShowLead: appProfile.tvShowLead || "",
     startupLog: appProfile.startupLog || "",
     searchPlaceholder: appProfile.searchPlaceholder
+  };
+});
+
+ipcMain.handle("choose-folder", async (_event, options = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: options.title || "Choose folder",
+    defaultPath: options.defaultPath || undefined,
+    properties: ["openDirectory", "createDirectory"]
+  });
+
+  if (result.canceled || !result.filePaths?.[0]) {
+    return { ok: false, canceled: true };
+  }
+
+  return { ok: true, path: result.filePaths[0] };
+});
+
+ipcMain.handle("save-media-folders", (_event, payload = {}) => {
+  const localVideoFolder = String(payload.localVideoFolder || "").trim();
+  const nasVideoFolder = String(payload.nasVideoFolder || "").trim();
+
+  if (localVideoFolder) {
+    const localAccess = ensureLocalFolder(localVideoFolder);
+    if (!localAccess.ok) return localAccess;
+    saveLocalConfig({ videoFolder: localAccess.path });
+  } else {
+    saveLocalConfig({ videoFolder: "" });
+  }
+
+  saveNasConfig({ videoFolder: nasVideoFolder });
+
+  return {
+    ok: true,
+    outputDirectory: outputDirectory(),
+    nasVideoFolder: loadNasConfig().videoFolder
+  };
+});
+
+ipcMain.handle("get-folder-storage", async (_event, payload = {}) => {
+  const localFolder = Object.prototype.hasOwnProperty.call(payload, "localFolder")
+    ? String(payload.localFolder || "").trim()
+    : outputDirectory();
+  const nasFolder = Object.prototype.hasOwnProperty.call(payload, "nasFolder")
+    ? String(payload.nasFolder || "").trim()
+    : loadNasConfig().videoFolder;
+
+  if (nasFolder) {
+    try {
+      prepareNasAccess(nasFolder);
+    } catch {
+      // Storage lookup still runs; failures surface as unavailable.
+    }
+  }
+
+  return {
+    ok: true,
+    local: localFolder
+      ? getFolderStorage(localFolder)
+      : { ok: false, error: "No folder set" },
+    nas: nasFolder
+      ? getFolderStorage(nasFolder)
+      : { ok: false, error: "No NAS folder set" }
   };
 });
 
@@ -1595,27 +1677,38 @@ ipcMain.handle("reload-page", () => {
 });
 
 ipcMain.handle("set-catalog-browser-locked", (_event, locked = true) => {
-  catalogBrowserLocked = Boolean(locked);
-  if (!isCatalogMode()) {
+  if (!isCustomShell()) {
     return { ok: true, locked: false };
   }
+  catalogBrowserLocked = Boolean(locked);
   if (catalogBrowserLocked) {
     hideBrowserView();
-    mainWindow?.webContents.send("show-search-landing");
+    if (isCatalogMode()) {
+      mainWindow?.webContents.send("show-search-landing");
+    }
   }
   return { ok: true, locked: catalogBrowserLocked };
 });
 
-ipcMain.handle("go-home", () => {
+ipcMain.handle("go-home", (_event, options = {}) => {
   if (!browserView) return { ok: false, error: "Browser is not ready." };
-  if (isCatalogMode() && catalogBrowserLocked) {
+  const browseSite = Boolean(options?.browse);
+  if (options?.hideBrowser) {
+    if (isCustomShell()) catalogBrowserLocked = true;
+    hideBrowserView();
+    return { ok: true, hidden: true };
+  }
+  if (browseSite && isCustomShell()) {
+    catalogBrowserLocked = false;
+  }
+  if (!browseSite && isBrowserLocked()) {
     showSearchLanding();
-    return { ok: true, catalog: true };
+    return { ok: true, home: true };
   }
   resetStreamCapture();
   ensureBrowserVisible();
   browserView.webContents.loadURL(SITE_HOME_URL);
-  return { ok: true, url: SITE_HOME_URL };
+  return { ok: true, url: SITE_HOME_URL, browse: browseSite };
 });
 
 ipcMain.handle("get-site-credentials", () => {
@@ -1700,7 +1793,7 @@ ipcMain.handle("download-movie", async (_event, payload = {}) => {
     return { ok: false, error: "Pick a movie from the catalog first." };
   }
 
-  const destination = payload.destination === "nas" ? "nas" : "local";
+  const destination = "nas";
   try {
     await loadMoviePageForQueue(movieUrl);
     return await startStreamDownload(destination, { freshLink: true });
@@ -1716,7 +1809,7 @@ ipcMain.handle("add-movie-to-queue", (_event, payload = {}) => {
     return { ok: false, error: "Invalid movie URL." };
   }
 
-  const destination = payload.destination === "nas" ? "nas" : "local";
+  const destination = "nas";
   const result = downloadQueue.add(movieUrl, {
     destination,
     title: payload.title || titleFromMovieUrl(movieUrl)
@@ -1817,16 +1910,39 @@ async function fetchFreshDirectDownloadLink(contents, options = {}) {
 
   directDownloadCapture.clear();
 
-  const timeoutMs = options.timeoutMs ?? 25_000;
-  const minQualityHeight = options.minQualityHeight ?? 1080;
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  const minQualityHeight = options.minQualityHeight ?? 720;
   const startedAt = Date.now();
   let attempt = 0;
   let bestSoFar = null;
   let maxHeightSeen = 0;
 
   while (Date.now() - startedAt < timeoutMs) {
+    if (options.shouldContinue && !options.shouldContinue()) {
+      return { ok: false, cancelled: true, error: "Cancelled." };
+    }
+
     attempt += 1;
-    const result = await fetchDirectLinksForMovie(contents, canonicalUrl);
+    const remaining = timeoutMs - (Date.now() - startedAt);
+    if (remaining <= 0) break;
+
+    let result;
+    try {
+      result = await withTimeout(
+        fetchDirectLinksForMovie(contents, canonicalUrl),
+        Math.min(12_000, remaining),
+        "Download link scan"
+      );
+    } catch (error) {
+      queueDebug("link-timeout", error.message || String(error), {
+        movieUrl,
+        movieId,
+        attempt,
+        elapsedMs: Date.now() - startedAt
+      });
+      break;
+    }
+
     await ingestDirectLinksFromScan(result, "getbutton-id");
 
     const best = directDownloadCapture.bestLink();
@@ -1861,15 +1977,15 @@ async function fetchFreshDirectDownloadLink(contents, options = {}) {
       }
     );
 
-    if (bestSoFar && maxHeightSeen >= minQualityHeight) {
+    if (bestSoFar && (maxHeightSeen >= minQualityHeight || (bestSoFar.height || 0) >= minQualityHeight)) {
       return { ok: true, best: bestSoFar, elapsedMs: Date.now() - startedAt, attempt };
     }
 
-    if (bestSoFar && attempt >= 4 && maxHeightSeen > 0) {
+    if (bestSoFar && attempt >= 2) {
       return { ok: true, best: bestSoFar, elapsedMs: Date.now() - startedAt, attempt };
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 400));
   }
 
   if (bestSoFar) {
@@ -1886,7 +2002,7 @@ async function fetchFreshDirectDownloadLink(contents, options = {}) {
   return {
     ok: false,
     best: null,
-    error: "Could not generate a fresh download link from the movie page."
+    error: "Fresh link timed out."
   };
 }
 
@@ -2012,12 +2128,22 @@ async function resolveDownloadTarget(options = {}) {
   };
 }
 
-async function startStreamDownload(destination = "local", options = {}) {
+async function startStreamDownload(destination = "nas", options = {}) {
+  destination = "nas";
   ffmpegRunner.beginPrepare({
     destination,
     phase: "Preparing download...",
     percent: 8
   });
+
+  const preparedLink = options.preparedLink?.url ? options.preparedLink : null;
+  if (preparedLink?.url) {
+    rememberDirectDownloadLink(
+      preparedLink.url,
+      preparedLink.requestHeaders || [],
+      "queue-prepared"
+    );
+  }
 
   const rawPageUrl = browserView?.webContents?.getURL() || "";
   const pageUrl = canonicalMoviePageUrl(rawPageUrl) || rawPageUrl;
@@ -2083,21 +2209,16 @@ async function startStreamDownload(destination = "local", options = {}) {
       : `Best stream found (${resolved.qualityLabel || "best available"}). Downloading poster...`,
     22
   );
-  const nas = loadNasConfig();
-  let outputDir = outputDirectory();
-
-  if (destination === "nas") {
-    const access = ensureNasFolder(nas.videoFolder);
-    if (!access.ok) {
-      ffmpegRunner.clearJob();
-      return {
-        ok: false,
-        error: access.error,
-        needsCredentials: Boolean(access.needsCredentials)
-      };
-    }
-    outputDir = access.path;
+  const access = nasOutputAccess();
+  if (!access.ok) {
+    ffmpegRunner.clearJob();
+    return {
+      ok: false,
+      error: access.error,
+      needsCredentials: Boolean(access.needsCredentials)
+    };
   }
+  const outputDir = access.path;
 
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -2144,7 +2265,7 @@ async function startStreamDownload(destination = "local", options = {}) {
 
         setImmediate(() => {
           embedPosterInVideoAsync(ffmpegPath, job.outputPath, posterPath, {
-            removePosterAfterEmbed: true
+            removePosterAfterEmbed: false
           })
             .then((result) => {
               if (result.ok) {
@@ -2191,7 +2312,7 @@ async function startStreamDownload(destination = "local", options = {}) {
       ...result,
       artworkPath,
       destination,
-      nasPortalUrl: destination === "nas" ? nas.portalUrl : null,
+      nasPortalUrl: loadNasConfig().portalUrl || null,
       quality: {
         label: resolved.qualityLabel,
         width: resolved.width,
@@ -2208,7 +2329,7 @@ async function startStreamDownload(destination = "local", options = {}) {
   }
 }
 
-ipcMain.handle("download-current-stream", async () => startStreamDownload("local"));
+ipcMain.handle("download-current-stream", async () => startStreamDownload("nas"));
 
 ipcMain.handle("save-to-nas", async () => startStreamDownload("nas"));
 
@@ -2216,6 +2337,7 @@ ipcMain.handle("get-download-queue", () => ({
   ok: true,
   processing: queueProcessing,
   snapshot: downloadQueue.snapshot(),
+  recovery: queueRecovery,
   debugLogPath: streamDebug.logPath()
 }));
 
@@ -2302,12 +2424,12 @@ ipcMain.handle("start-download-queue", async (_event, destination = "local") => 
     return { ok: false, error: "Stop the TV download before starting the queue." };
   }
 
-  if (!downloadQueue.nextPending()) {
+  if (!downloadQueue.hasWork()) {
     return { ok: false, error: "Queue is empty. Add movies or TV episodes first." };
   }
 
-  const normalizedDestination = destination === "nas" ? "nas" : "local";
-  downloadQueue.setPendingDestination(normalizedDestination);
+  downloadQueue.reviveFailed();
+  downloadQueue.setPendingDestination("nas");
   notifyQueueUpdate();
 
   runDownloadQueue().catch((error) => {
@@ -2315,7 +2437,7 @@ ipcMain.handle("start-download-queue", async (_event, destination = "local") => 
     notifyQueueUpdate({ phase: "error", error: error.message || String(error) });
   });
 
-  return { ok: true, started: true, destination: normalizedDestination };
+  return { ok: true, started: true, destination: "nas" };
 });
 
 ipcMain.handle("stop-download-queue", async () => {
@@ -2331,15 +2453,21 @@ async function applyTvShowScan(scan, pageUrl = "") {
       ok: false,
       error:
         scan?.error ||
-        (isAniwaveUrl(pageUrl)
+        (isAniwaveHost(pageUrl) || isAniwaveUrl(pageUrl)
           ? "Could not find episodes on this Aniwave page. Open a watch URL like /watch/show-name/ep-1, then scan again."
           : "Could not find episodes for this season. Open a specific season page with its episode list visible, then scan again.")
     };
   }
 
+  const aniwaveScan =
+    isAniwaveHost(pageUrl) ||
+    isAniwaveUrl(pageUrl) ||
+    isAniwaveUrl(scan.showUrl) ||
+    (scan.episodes || []).some((episode) => isAniwaveUrl(episode.url));
   const baseSlug = showBaseSlugFromUrl(pageUrl) || showBaseSlugFromUrl(scan.showUrl);
   const episodes = (scan.episodes || []).filter((episode) => {
     if (!episode?.url) return false;
+    if (aniwaveScan) return true;
     if (!baseSlug) return true;
     const episodeSlug = showBaseSlugFromUrl(episode.url);
     return !episodeSlug || episodeSlug.toLowerCase() === baseSlug.toLowerCase();
@@ -2681,6 +2809,19 @@ ipcMain.handle("scan-tv-show", async (_event, payload) => {
     return { ok: false, error: "Browser is not ready." };
   }
 
+  if (appProfile.hideMovieDownloader) {
+    catalogBrowserLocked = false;
+    ensureBrowserVisible();
+    const currentUrl = contents.getURL() || "";
+    if (!currentUrl || currentUrl === "about:blank") {
+      return {
+        ok: false,
+        error: "Search or browse Aniwave, open a series page, then scan."
+      };
+    }
+    await delay(900);
+  }
+
   let scan = await scrapeTvShowFromPage(contents, { season, skipSelect: false });
   if (scan?.needsNavigation && scan.navigateTo) {
     try {
@@ -2707,11 +2848,10 @@ ipcMain.handle("add-tv-plan-to-queue", (_event, destination = "local") => {
     return { ok: false, error: "Stop the queue before adding more episodes." };
   }
 
-  const normalizedDestination = destination === "nas" ? "nas" : "local";
   const result = downloadQueue.addEpisodes(tvShowPlan.episodes, {
     showTitle: tvShowPlan.showTitle,
     posterUrl: tvShowPlan.posterUrl || null,
-    destination: normalizedDestination
+    destination: "nas"
   });
 
   queueDebug("queue-add-season", `Queued ${result.added.length} episode(s) from ${tvShowPlan.showTitle}`, {
@@ -2719,7 +2859,7 @@ ipcMain.handle("add-tv-plan-to-queue", (_event, destination = "local") => {
     season: tvShowPlan.season,
     added: result.added.length,
     skipped: result.skipped.length,
-    destination: normalizedDestination
+    destination: "nas"
   });
   notifyQueueUpdate();
   return {
@@ -2728,6 +2868,75 @@ ipcMain.handle("add-tv-plan-to-queue", (_event, destination = "local") => {
     skipped: result.skipped,
     plan: tvShowPlan
   };
+});
+
+function titleFromAniwaveSlug(slug) {
+  return String(slug || "")
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .trim() || "Anime";
+}
+
+ipcMain.handle("add-current-episode-to-queue", (_event, destination = "local") => {
+  if (queueProcessing) {
+    return { ok: false, error: "Stop the queue before adding more episodes." };
+  }
+  const contents = browserView?.webContents;
+  if (!contents || contents.isDestroyed()) {
+    return { ok: false, error: "Browser is not ready." };
+  }
+
+  const pageUrl = contents.getURL() || "";
+  if (!isAniwaveUrl(pageUrl)) {
+    return {
+      ok: false,
+      error: "Open an Aniwave episode page first (/watch/show-name/ep-1), then add it to the queue."
+    };
+  }
+
+  const parsed = (() => {
+    try {
+      const url = new URL(pageUrl);
+      const match = url.pathname.match(/\/watch\/([^/]+)(?:\/ep-(\d+))?/i);
+      if (!match) return null;
+      const slug = match[1];
+      const episode = match[2] ? Number.parseInt(match[2], 10) : 1;
+      return {
+        slug,
+        episode,
+        episodeUrl: match[2] ? pageUrl : `${url.origin}/watch/${slug}/ep-1`,
+        showTitle: titleFromAniwaveSlug(slug)
+      };
+    } catch {
+      return null;
+    }
+  })();
+
+  if (!parsed) {
+    return { ok: false, error: "Could not read the current episode URL." };
+  }
+
+  const result = downloadQueue.addEpisode(
+    {
+      url: parsed.episodeUrl,
+      season: 1,
+      episode: parsed.episode,
+      title: `Episode ${parsed.episode}`
+    },
+    {
+      showTitle: parsed.showTitle,
+      destination: "nas"
+    }
+  );
+  if (!result.ok) return result;
+
+  queueDebug("queue-add-episode", `Queued ${result.item.title}`, {
+    url: parsed.episodeUrl,
+    episode: parsed.episode
+  });
+  notifyQueueUpdate();
+  return { ok: true, item: result.item };
 });
 
 ipcMain.handle("get-tv-show-plan", () => ({
@@ -2753,13 +2962,12 @@ ipcMain.handle("start-tv-show-download", async (_event, destination = "local") =
     return { ok: false, error: "A download is already running." };
   }
 
-  const normalizedDestination = destination === "nas" ? "nas" : "local";
-  runTvShowDownloadJob(normalizedDestination).catch((error) => {
+  runTvShowDownloadJob("nas").catch((error) => {
     streamDebug.log("tv-show", "TV show download failed", { error: error.message || String(error) });
     notifyTvShowUpdate({ phase: "error", error: error.message || String(error) });
   });
 
-  return { ok: true, started: true, destination: normalizedDestination };
+  return { ok: true, started: true, destination: "nas" };
 });
 
 ipcMain.handle("stop-tv-show-download", async () => {
@@ -2838,7 +3046,7 @@ ipcMain.handle("embed-movie-poster", async (_event, filePath) => {
   }
 
   const result = await embedPosterInVideoAsync(ffmpegPath, videoPath, posterPath, {
-    removePosterAfterEmbed: true
+    removePosterAfterEmbed: false
   });
 
   if (!result.ok) {
@@ -2885,8 +3093,9 @@ ipcMain.handle("set-chrome-layout", (_event, layout) => {
 ipcMain.handle("stop-download", async () => ffmpegRunner.stop());
 
 ipcMain.handle("open-output-folder", () => {
-  shell.openPath(outputDirectory());
-  return { ok: true };
+  const access = nasOutputAccess();
+  if (access.ok) shell.openPath(access.path);
+  return { ok: access.ok, error: access.error };
 });
 
 function normalizeTitleKey(value) {
@@ -2908,41 +3117,100 @@ function showNeedsOfficialPoster(show) {
   }
 }
 
-async function backfillOfficialShowPosters(library) {
+function artworkFetchHeaders() {
+  return [
+    { name: "Referer", value: `${SITE_BASE_URL}/` },
+    { name: "User-Agent", CHROME_USER_AGENT }
+  ];
+}
+
+function movieNeedsPoster(movie) {
+  if (!movie?.filePath || movie.kind === "tv-show") return false;
+  const existing = findPosterForVideo(movie.filePath);
+  if (!existing) return true;
+  try {
+    return fs.statSync(existing).size < 8 * 1024;
+  } catch {
+    return true;
+  }
+}
+
+function pickCatalogMatch(results, title, kind) {
+  const want = normalizeTitleKey(title);
+  if (!want || !Array.isArray(results)) return null;
+
+  const matchesKind = (item) => {
+    if (kind === "tv") {
+      return item.kind === "tv" || /\/(?:tv-series|tv|serie|series)\//i.test(item.movieUrl || "");
+    }
+    return item.kind === "movie" || /\/movie\//i.test(item.movieUrl || "");
+  };
+
+  return (
+    results.find((item) => matchesKind(item) && normalizeTitleKey(item.title) === want && item.posterUrl) ||
+    results.find((item) => matchesKind(item) && normalizeTitleKey(item.title) === want) ||
+    results.find(
+      (item) =>
+        matchesKind(item) &&
+        item.posterUrl &&
+        (normalizeTitleKey(item.title).includes(want) || want.includes(normalizeTitleKey(item.title)))
+    ) ||
+    results.find((item) => item.posterUrl && normalizeTitleKey(item.title).includes(want))
+  );
+}
+
+async function resolveTornadoPosterUrl(match) {
+  if (match?.posterUrl) return match.posterUrl;
+  if (!match?.movieUrl || queueProcessing || tvShowProcessing) return null;
+
+  try {
+    if (match.kind === "tv" || /\/(?:tv-series|tv|serie|series)\//i.test(match.movieUrl)) {
+      await loadContentPageForDownload(match.movieUrl, 25_000);
+    } else {
+      await loadMoviePageForQueue(match.movieUrl, 25_000);
+    }
+    return await extractArtworkUrl(browserView?.webContents);
+  } catch {
+    return null;
+  }
+}
+
+async function backfillOfficialLibraryPosters(library) {
+  if (queueProcessing || tvShowProcessing) return library;
+
+  const movies = [...(library?.local?.movies || []), ...(library?.nas?.movies || [])].filter(movieNeedsPoster);
   const shows = [...(library?.local?.movies || []), ...(library?.nas?.movies || [])].filter(
     (entry) => entry?.kind === "tv-show" && showNeedsOfficialPoster(entry)
   );
-  if (!shows.length) return library;
+  const jobs = [
+    ...movies.slice(0, 3).map((entry) => ({ entry, kind: "movie" })),
+    ...shows.slice(0, 2).map((entry) => ({ entry, kind: "tv" }))
+  ].slice(0, 3);
 
-  // One search at a time; keep this short so Electron doesn't thrash the hidden browser.
-  for (const show of shows.slice(0, 4)) {
+  if (!jobs.length) return library;
+
+  const headers = artworkFetchHeaders();
+
+  for (const job of jobs) {
+    if (queueProcessing || tvShowProcessing) break;
     try {
-      const search = await catalogSearch(show.title);
+      const search = await catalogSearch(job.entry.title);
       if (!search.ok || !search.movies?.length) continue;
-      const want = normalizeTitleKey(show.title);
-      const match =
-        search.movies.find(
-          (item) =>
-            (item.kind === "tv" || /\/(?:tv-series|tv|serie|series)\//i.test(item.movieUrl || "")) &&
-            normalizeTitleKey(item.title) === want &&
-            item.posterUrl
-        ) ||
-        search.movies.find(
-          (item) =>
-            (item.kind === "tv" || /\/(?:tv-series|tv|serie|series)\//i.test(item.movieUrl || "")) &&
-            normalizeTitleKey(item.title).includes(want) &&
-            item.posterUrl
-        ) ||
-        search.movies.find((item) => item.posterUrl && normalizeTitleKey(item.title).includes(want));
 
-      if (!match?.posterUrl) continue;
-      const saved = await saveShowPoster(match.posterUrl, [], show.folderPath, { force: true });
-      if (saved) {
-        show.posterUrl = posterUrlForPath(saved);
+      const match = pickCatalogMatch(search.movies, job.entry.title, job.kind);
+      const posterUrl = await resolveTornadoPosterUrl(match);
+      if (!posterUrl) continue;
+
+      if (job.kind === "tv") {
+        const saved = await saveShowPoster(posterUrl, headers, job.entry.folderPath, { force: true });
+        if (saved) job.entry.posterUrl = posterUrlForPath(saved);
+      } else {
+        const saved = await saveArtworkFromUrl(posterUrl, job.entry.filePath, headers);
+        if (saved) job.entry.posterUrl = posterUrlForPath(saved);
       }
-      await delay(400);
+      await delay(800);
     } catch {
-      // Keep going through remaining shows.
+      // Keep going through remaining titles.
     }
   }
 
@@ -2958,7 +3226,7 @@ ipcMain.handle("get-downloaded-movies", async (_event, options = {}) => {
   });
   if (options?.backfillPosters) {
     try {
-      await backfillOfficialShowPosters(library);
+      await backfillOfficialLibraryPosters(library);
     } catch {
       // Library listing should still succeed without poster backfill.
     }
@@ -2990,17 +3258,18 @@ ipcMain.handle("reveal-downloaded-movie", (_event, filePath) => {
 
 ipcMain.handle("open-library-folder", (_event, location) => {
   const nas = loadNasConfig();
-  const folderPath = location === "nas" ? nas.videoFolder : outputDirectory();
-  shell.openPath(folderPath);
+  const folderPath = nas.videoFolder;
+  if (folderPath) shell.openPath(folderPath);
   return { ok: true, path: folderPath };
 });
 
 ipcMain.handle("show-output-folder", async () => {
+  const nas = loadNasConfig();
   await dialog.showMessageBox(mainWindow, {
     type: "info",
-    title: "Movies folder",
-    message: "Videos are saved here:",
-    detail: outputDirectory()
+    title: "NAS videos folder",
+    message: "Downloads are saved on the NAS here:",
+    detail: nas.videoFolder || "No NAS folder is set. Open Settings and choose NAS videos."
   });
   return { ok: true };
 });
@@ -3009,7 +3278,12 @@ app.whenReady().then(async () => {
   cleanupStaleDownloadArtifacts(outputDirectory());
   const nas = loadNasConfig();
   cleanupStaleDownloadArtifacts(nas.videoFolder);
+  restoreDownloadQueue();
   await createWindow();
+
+  app.on("child-process-gone", (_event, details) => {
+    streamDebug.log("crash", "Child process gone", details);
+  });
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -3018,8 +3292,23 @@ app.whenReady().then(async () => {
   });
 });
 
+app.on("before-quit", () => {
+  persistDownloadQueue();
+});
+
 app.on("window-all-closed", () => {
+  persistDownloadQueue();
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+process.on("uncaughtException", (error) => {
+  persistDownloadQueue();
+  console.error("Uncaught exception", error);
+});
+
+process.on("unhandledRejection", (error) => {
+  persistDownloadQueue();
+  console.error("Unhandled rejection", error);
 });

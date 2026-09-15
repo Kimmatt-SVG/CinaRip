@@ -1,6 +1,41 @@
+const IDENTITY_COOKIE_NAMES = new Set(["identity", "_identity"]);
+
 function isTornadoSite(url) {
   try {
     return /(?:^|\.)tornadomovies\.co$/i.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isIdentityCookieName(name) {
+  return IDENTITY_COOKIE_NAMES.has(String(name || "").toLowerCase());
+}
+
+async function sessionHasTornadoIdentity(session, siteUrl) {
+  if (!session) return false;
+  const cookies = [];
+  try {
+    cookies.push(...(await session.cookies.get({ domain: "tornadomovies.co" })));
+  } catch {
+    // domain filter is optional
+  }
+  if (siteUrl) {
+    try {
+      cookies.push(...(await session.cookies.get({ url: siteUrl })));
+    } catch {
+      // ignore invalid urls
+    }
+  }
+  return cookies.some((cookie) => isIdentityCookieName(cookie?.name) && cookie?.value);
+}
+
+async function pageShowsTornadoLoggedIn(contents) {
+  if (!contents || contents.isDestroyed()) return false;
+  try {
+    return await contents.executeJavaScript(
+      `Boolean(document.querySelector('a[href*="/user/logout"], a[href*="logout"], a[href*="signout"], a[href*="sign-out"]'))`
+    );
   } catch {
     return false;
   }
@@ -481,6 +516,10 @@ async function trySiteAutoLogin(contents, credentials) {
     return { ok: false, status: "browser-not-ready" };
   }
 
+  if (await pageShowsTornadoLoggedIn(contents)) {
+    return { ok: true, status: "already-logged-in" };
+  }
+
   if (!credentials?.username || !credentials?.password) {
     return { ok: false, status: "no-credentials" };
   }
@@ -599,6 +638,15 @@ function setupSiteAutoLogin(contents, options = {}) {
     const url = contents.getURL();
     if (!isTornadoSite(url)) return;
 
+    if (
+      (await pageShowsTornadoLoggedIn(contents)) ||
+      (await sessionHasTornadoIdentity(contents.session, homeUrl || url))
+    ) {
+      pendingManualLogin = false;
+      onResult?.({ ok: true, status: "already-logged-in" }, { url });
+      return;
+    }
+
     const credentials = typeof loadCredentials === "function" ? loadCredentials() : null;
     if (!credentials?.username || !credentials?.password) return;
 
@@ -608,6 +656,11 @@ function setupSiteAutoLogin(contents, options = {}) {
       await new Promise((resolve) => setTimeout(resolve, 1200));
       const found = await waitForLoginForm(contents);
       if (!found) {
+        if (await pageShowsTornadoLoggedIn(contents)) {
+          pendingManualLogin = false;
+          onResult?.({ ok: true, status: "already-logged-in" }, { url });
+          return;
+        }
         onResult?.({ ok: false, status: "login-form-not-found" }, { url, manual: true });
         pendingManualLogin = false;
         return;
@@ -640,26 +693,35 @@ function setupSiteAutoLogin(contents, options = {}) {
   }
 
   contents.on("did-finish-load", () => {
+    const url = contents.getURL();
+    if (!isTornadoSite(url)) return;
+    if (!pendingManualLogin && !isPremiumLoginUrl(url)) return;
+
     installMonitor();
-
-    if (!isTornadoSite(contents.getURL())) return;
-    if (!pendingManualLogin && !isPremiumLoginUrl(contents.getURL())) return;
-
     runAutoLogin().catch(() => {
       pendingManualLogin = false;
     });
   });
 
   return {
-    requestManualLogin() {
-      pendingManualLogin = true;
+    async requestManualLogin() {
       lastReportedLoginResult = null;
-      installMonitor();
 
       if (!contents || contents.isDestroyed()) {
         return { ok: false, error: "Browser is not ready." };
       }
 
+      const alreadyIn =
+        (await pageShowsTornadoLoggedIn(contents)) ||
+        (await sessionHasTornadoIdentity(contents.session, homeUrl || loginUrl));
+      if (alreadyIn) {
+        pendingManualLogin = false;
+        onResult?.({ ok: true, status: "already-logged-in" }, { url: contents.getURL() });
+        return { ok: true, status: "already-logged-in", url: contents.getURL() || homeUrl };
+      }
+
+      pendingManualLogin = true;
+      installMonitor();
       contents.loadURL(loginUrl);
       return { ok: true, url: loginUrl, mode: "premium-page" };
     },
@@ -677,5 +739,7 @@ module.exports = {
   isSiteLoginUrl,
   isPremiumLoginUrl,
   trySiteAutoLogin,
-  setupSiteAutoLogin
+  setupSiteAutoLogin,
+  sessionHasTornadoIdentity,
+  pageShowsTornadoLoggedIn
 };

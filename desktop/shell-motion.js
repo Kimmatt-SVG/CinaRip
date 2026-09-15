@@ -51,7 +51,7 @@
   function animateCatalogHome(root) {
     if (!ready() || !root) return;
     const level = motionLevel();
-    const hero = root.querySelector(".catalog-home-hero") || root;
+    const hero = root.querySelector(".anime-hero") || root.querySelector(".catalog-home-hero") || root;
     const panels = root.querySelectorAll(".home-panel");
     freeze(hero, { opacity: 0, y: level === "full" ? 14 : 0 });
     if (panels.length) freeze(panels, { opacity: 0, y: level === "full" ? 16 : 0 });

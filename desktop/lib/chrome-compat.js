@@ -1,5 +1,3 @@
-const { webFrameMain } = require("electron");
-
 const CHROME_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
@@ -49,17 +47,7 @@ function setupChromeCompatibility(session, contents) {
     });
   };
 
-  const injectAll = () => {
-    inject(contents.mainFrame);
-    for (const frame of contents.mainFrame.framesInSubtree) {
-      inject(frame);
-    }
-  };
-
-  contents.on("dom-ready", injectAll);
-  contents.on("did-frame-finish-load", (_event, _isMainFrame, frameProcessId, frameRoutingId) => {
-    inject(webFrameMain.fromId(frameProcessId, frameRoutingId));
-  });
+  contents.on("dom-ready", () => inject(contents.mainFrame));
 }
 
 module.exports = {

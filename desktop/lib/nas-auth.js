@@ -20,13 +20,14 @@ function loadNasCredentials() {
 }
 
 function saveNasCredentials({ username, password }) {
+  const existing = loadNasCredentials();
   fs.mkdirSync(path.dirname(credentialsPath()), { recursive: true });
   fs.writeFileSync(
     credentialsPath(),
     JSON.stringify(
       {
         username: String(username || "").trim(),
-        password: String(password || "")
+        password: password ? String(password) : existing.password
       },
       null,
       2

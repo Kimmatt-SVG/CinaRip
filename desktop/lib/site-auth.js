@@ -20,13 +20,14 @@ function loadSiteCredentials() {
 }
 
 function saveSiteCredentials({ username, password, autoLogin = true }) {
+  const existing = loadSiteCredentials();
   fs.mkdirSync(path.dirname(credentialsPath()), { recursive: true });
   fs.writeFileSync(
     credentialsPath(),
     JSON.stringify(
       {
         username: String(username || "").trim(),
-        password: String(password || ""),
+        password: password ? String(password) : existing.password,
         autoLogin: Boolean(autoLogin)
       },
       null,

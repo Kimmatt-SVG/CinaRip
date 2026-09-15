@@ -145,16 +145,19 @@ async function downloadArtwork(imageUrl, requestHeaders = [], outputPath) {
   return outputPath;
 }
 
-async function saveArtworkForPage(webContents, requestHeaders, videoOutputPath) {
-  const artworkUrl = await extractArtworkUrl(webContents);
-  if (!artworkUrl) return null;
+async function saveArtworkFromUrl(imageUrl, videoOutputPath, requestHeaders = []) {
+  if (!imageUrl || !videoOutputPath) return null;
 
   const primaryPosterPath = posterPathForVideo(videoOutputPath, ".jpg");
-  await downloadArtwork(artworkUrl, requestHeaders, primaryPosterPath);
+  await downloadArtwork(imageUrl, requestHeaders, primaryPosterPath);
 
   const mediaPosterPath = mediaServerPosterPath(videoOutputPath, ".jpg");
   if (mediaPosterPath !== primaryPosterPath) {
-    fs.copyFileSync(primaryPosterPath, mediaPosterPath);
+    try {
+      fs.copyFileSync(primaryPosterPath, mediaPosterPath);
+    } catch {
+      // Sidecar copy is optional.
+    }
   }
 
   return primaryPosterPath;
@@ -176,9 +179,16 @@ async function saveShowPoster(posterUrl, requestHeaders, showFolder, options = {
   return outputPath;
 }
 
+async function saveArtworkForPage(webContents, requestHeaders, videoOutputPath) {
+  const artworkUrl = await extractArtworkUrl(webContents);
+  if (!artworkUrl) return null;
+  return saveArtworkFromUrl(artworkUrl, videoOutputPath, requestHeaders);
+}
+
 module.exports = {
   extractArtworkUrl,
   saveArtworkForPage,
+  saveArtworkFromUrl,
   downloadArtwork,
   saveShowPoster
 };

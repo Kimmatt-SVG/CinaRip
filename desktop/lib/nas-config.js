@@ -8,9 +8,13 @@ const DEFAULTS = {
   videoFolder: ""
 };
 
+function userConfigPath() {
+  return path.join(app.getPath("userData"), "nas-config.json");
+}
+
 function configPath() {
   try {
-    const userConfig = path.join(app.getPath("userData"), "nas-config.json");
+    const userConfig = userConfigPath();
     if (fs.existsSync(userConfig)) return userConfig;
   } catch {
     // app may not be ready yet
@@ -43,6 +47,20 @@ function loadNasConfig() {
   return merged;
 }
 
+function saveNasConfig({ portalUrl, videoFolder } = {}) {
+  const current = loadNasConfig();
+  const next = {
+    portalUrl:
+      portalUrl !== undefined ? String(portalUrl || "").trim() : current.portalUrl,
+    videoFolder:
+      videoFolder !== undefined ? String(videoFolder || "").trim() : current.videoFolder
+  };
+
+  fs.mkdirSync(path.dirname(userConfigPath()), { recursive: true });
+  fs.writeFileSync(userConfigPath(), JSON.stringify(next, null, 2));
+  return loadNasConfig();
+}
+
 function isUncPath(folderPath) {
   return typeof folderPath === "string" && folderPath.startsWith("\\\\");
 }
@@ -53,7 +71,7 @@ function ensureNasFolder(folderPath) {
       ok: false,
       path: folderPath || "",
       error:
-        "No NAS video folder is configured. Set NAS_VIDEO_FOLDER or create desktop/nas-config.json."
+        "No NAS video folder is configured. Open Settings and choose a NAS videos folder."
     };
   }
 
@@ -79,5 +97,6 @@ function ensureNasFolder(folderPath) {
 
 module.exports = {
   loadNasConfig,
+  saveNasConfig,
   ensureNasFolder
 };

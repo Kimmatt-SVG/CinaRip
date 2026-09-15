@@ -21,6 +21,39 @@ function normalizePageUrl(url) {
   return canonicalContentUrl(url) || normalizeMovieUrl(url) || String(url || "").trim();
 }
 
+function sanitizeQueueItem(raw = {}) {
+  const kind = raw.kind === "episode" ? "episode" : "movie";
+  const movieUrl =
+    kind === "episode" ? normalizePageUrl(raw.movieUrl || raw.url || "") : normalizeMovieUrl(raw.movieUrl || "");
+  if (!movieUrl) return null;
+
+  const status = ["pending", "loading", "downloading", "done", "failed"].includes(raw.status)
+    ? raw.status
+    : "pending";
+
+  const item = {
+    id: String(raw.id || `q-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+    kind,
+    title: String(raw.title || (kind === "episode" ? "Episode" : titleFromMovieUrl(movieUrl))).trim() || "Queued item",
+    movieUrl,
+    destination: "nas",
+    status,
+    error: raw.error ? String(raw.error) : null,
+    passRetries: Number(raw.passRetries) || 0,
+    addedAt: Number(raw.addedAt) || Date.now()
+  };
+
+  if (kind === "episode") {
+    item.showTitle = String(raw.showTitle || "TV Show").trim() || "TV Show";
+    item.season = Number(raw.season) || 1;
+    item.episode = Number(raw.episode) || 0;
+    item.episodeTitle = String(raw.episodeTitle || "Episode").trim() || "Episode";
+    item.posterUrl = raw.posterUrl || null;
+  }
+
+  return item;
+}
+
 class DownloadQueue {
   constructor() {
     this.items = [];
@@ -74,9 +107,10 @@ class DownloadQueue {
       kind: "movie",
       title: options.title || titleFromMovieUrl(normalizedUrl),
       movieUrl: normalizedUrl,
-      destination: options.destination === "nas" ? "nas" : "local",
+      destination: "nas",
       status: "pending",
       error: null,
+      passRetries: 0,
       addedAt: Date.now()
     };
 
@@ -118,9 +152,10 @@ class DownloadQueue {
       episode: episodeNumber,
       episodeTitle,
       posterUrl: options.posterUrl || episode.posterUrl || null,
-      destination: options.destination === "nas" ? "nas" : "local",
+      destination: "nas",
       status: "pending",
       error: null,
+      passRetries: 0,
       addedAt: Date.now()
     };
 
@@ -177,18 +212,50 @@ class DownloadQueue {
     return { ok: true };
   }
 
-  setPendingDestination(destination = "local") {
-    const normalized = destination === "nas" ? "nas" : "local";
+  setPendingDestination() {
+    const normalized = "nas";
     for (const item of this.items) {
       if (item.status === "pending") item.destination = normalized;
     }
     return { ok: true, destination: normalized };
   }
 
+  hasWork() {
+    return this.items.some((item) => item.status === "pending" || item.status === "failed");
+  }
+
+  reviveFailed() {
+    let count = 0;
+    for (const item of this.items) {
+      if (item.status !== "failed") continue;
+      item.status = "pending";
+      item.error = null;
+      item.passRetries = 0;
+      count += 1;
+    }
+    return count;
+  }
+
+  requeueFailed() {
+    let count = 0;
+    for (const item of this.items) {
+      if (item.status !== "failed") continue;
+      if ((item.passRetries || 0) >= 1) continue;
+      item.passRetries = (item.passRetries || 0) + 1;
+      item.status = "pending";
+      item.error = null;
+      count += 1;
+    }
+    if (count) this.currentId = null;
+    return count;
+  }
+
   beginRun() {
     if (this.running) {
       return { ok: false, error: "Queue is already running." };
     }
+
+    this.reviveFailed();
 
     const pending = this.items.filter((item) => item.status === "pending");
     if (!pending.length) {
@@ -252,6 +319,40 @@ class DownloadQueue {
 
   nextPending() {
     return this.items.find((item) => item.status === "pending") || null;
+  }
+
+  persistableItems() {
+    return this.items.map((item) => ({ ...item }));
+  }
+
+  restore(rawItems = []) {
+    this.running = false;
+    this.cancelRequested = false;
+    this.currentId = null;
+    this.items = [];
+
+    let interrupted = 0;
+    const seen = new Set();
+
+    for (const raw of Array.isArray(rawItems) ? rawItems : []) {
+      const item = sanitizeQueueItem(raw);
+      if (!item || seen.has(item.id)) continue;
+      seen.add(item.id);
+
+      if (item.status === "loading" || item.status === "downloading") {
+        item.status = "pending";
+        item.error = null;
+        interrupted += 1;
+      }
+
+      this.items.push(item);
+    }
+
+    return {
+      ok: true,
+      restored: this.items.length,
+      interrupted
+    };
   }
 }
 
