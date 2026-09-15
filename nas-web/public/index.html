@@ -4,20 +4,72 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CinaRip Library</title>
-    <link rel="stylesheet" href="/styles.css?v=22" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/styles.css?v=67" />
+    <link rel="preload" href="/sounds/abyssal-starry-sky-slowed.mp3?v=4" as="audio" type="audio/mpeg" />
+    <script>
+      document.documentElement.classList.toggle(
+        "motion-on",
+        !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      );
+    </script>
   </head>
   <body>
-    <div class="ambient" aria-hidden="true"></div>
-    <header class="top">
-      <div>
-        <strong>CinaRip</strong>
-        <p id="status">Connecting to NAS…</p>
+    <audio id="bgm" src="/sounds/abyssal-starry-sky-slowed.mp3?v=4" preload="auto" loop playsinline hidden></audio>
+    <div class="ambient" aria-hidden="true">
+      <video
+        id="ambient-video"
+        class="ambient-video"
+        src="/media/plasma-stream.mp4?v=2"
+        autoplay
+        muted
+        loop
+        playsinline
+        preload="auto"
+      ></video>
+      <div class="ambient-diffusion"></div>
+    </div>
+    <div id="splash" class="splash" role="status" aria-live="polite" aria-busy="true">
+      <div class="splash-inner">
+        <img class="splash-logo" src="/logo.png" width="509" height="160" alt="CinaRip" />
+        <p id="splash-label" class="splash-label">Loading library…</p>
+        <button type="button" id="splash-ready" class="splash-ready" hidden aria-label="Ready to watch">
+          <img src="/icons/ready-to-watch.png?v=1" width="966" height="251" alt="" draggable="false">
+        </button>
       </div>
-      <nav class="tabs">
-        <a href="#" class="tab" id="tab-library">Library</a>
-        <a href="#/search" class="tab" id="tab-search">Search</a>
-        <a href="#/freezer" class="tab" id="tab-freezer">Freezer</a>
-      </nav>
+    </div>
+    <header class="top">
+      <div class="brand">
+        <img class="brand-logo" src="/logo.png" width="509" height="160" alt="CinaRip" />
+      </div>
+      <input id="filter" class="header-filter" type="search" placeholder="Filter titles" autocomplete="off" aria-label="Filter titles" />
+      <div class="top-actions">
+        <button type="button" id="music-mute" class="ghost music-mute" aria-pressed="false" aria-label="Mute music" title="Mute music">
+          <img src="/icons/music-on.png" width="36" height="36" alt="" draggable="false">
+          <span class="tab-label">Music</span>
+        </button>
+        <nav class="tabs">
+          <a href="#" class="tab" id="tab-library">
+            <img src="/icons/library.png" width="36" height="36" alt="" draggable="false">
+            <span class="tab-label">Library</span>
+          </a>
+          <a href="#/search" class="tab" id="tab-search">
+            <img src="/icons/search.png" width="36" height="36" alt="" draggable="false">
+            <span class="tab-label">Search</span>
+          </a>
+          <a href="#/freezer" class="tab" id="tab-freezer">
+            <img src="/icons/freezer.png" width="36" height="36" alt="" draggable="false">
+            <span class="tab-label">Freezer</span>
+          </a>
+          <a href="#/settings" class="tab" id="tab-settings">
+            <img src="/icons/settings.png" width="36" height="36" alt="" draggable="false">
+            <span class="tab-label">Settings</span>
+          </a>
+        </nav>
+      </div>
     </header>
 
     <section class="meter-card" id="job-card" hidden>
@@ -29,6 +81,7 @@
       <p id="job-phase" class="muted"></p>
     </section>
 
+    <div class="view-stage">
     <main id="view-library" class="view">
       <section class="meter-card" id="storage-card">
         <div class="meter-head">
@@ -38,37 +91,10 @@
         <div class="meter"><i id="storage-bar"></i></div>
         <p id="library-summary" class="muted">Scanning library…</p>
       </section>
-      <input id="filter" type="search" placeholder="Filter titles" autocomplete="off" />
       <div id="library-list"></div>
     </main>
 
     <main id="view-search" class="view" hidden>
-      <section class="meter-card" id="account-card">
-        <div class="meter-head">
-          <span>Tornado account</span>
-          <span id="account-label">Checking…</span>
-        </div>
-        <p id="account-hint" class="muted">Chrome being signed in does not sign in the NAS. Copy two Tornado cookies and paste them here.</p>
-        <ol class="captcha-steps">
-          <li>Open Tornado in Chrome and stay signed in. Use <strong>Open Tornado</strong> if you need the tab.</li>
-          <li>Right-click the page → Inspect → <strong>Application</strong> → <strong>Cookies</strong> → <code>https://www4.tornadomovies.co</code> (not Shared storage).</li>
-          <li>Copy the <strong>Value</strong> for <code>_identity-frontend1</code> and <code>advanced-frontend</code>. Skip Google cookies such as <code>_GRECAPTCHA</code>.</li>
-          <li>Paste one line below as <code>_identity-frontend1=…; advanced-frontend=…</code>, then Save cookie.</li>
-        </ol>
-        <form id="cookie-form" class="login-form">
-          <input id="tornado-cookie" type="text" placeholder="_identity-frontend1=…; advanced-frontend=…" autocomplete="off" />
-          <button type="submit" class="ghost">Save cookie</button>
-        </form>
-        <form id="login-form" class="login-form">
-          <button type="submit" class="ghost">Open Tornado</button>
-        </form>
-        <p id="account-error" class="muted account-error" hidden></p>
-        <div id="login-open-panel" hidden></div>
-        <details class="cookie-fallback">
-          <summary>Captcha method (optional)</summary>
-          <p class="muted">Only if cookie paste is not available. Drag <a id="captcha-bookmarklet" class="bookmarklet" href="#">Put Finish and close on Tornado</a> to the bookmarks bar, solve the captcha, click that bookmark, then click the blue bar. Do not click Tornado’s Login.</p>
-        </details>
-      </section>
       <form id="search-form" class="search-form">
         <input id="search-q" type="search" placeholder="Search movies and TV shows" autocomplete="off" />
         <button type="submit" class="ghost">Search</button>
@@ -145,19 +171,71 @@
       <div id="freezer-list"></div>
     </main>
 
+    <main id="view-settings" class="view" hidden>
+      <section class="meter-card" id="account-card">
+        <div class="meter-head">
+          <span>Tornado account</span>
+          <span id="account-label">Checking…</span>
+        </div>
+        <p id="account-hint" class="muted">Chrome being signed in does not sign in the NAS. Copy two Tornado cookies and paste them here.</p>
+        <ol class="captcha-steps">
+          <li>Open Tornado in Chrome and stay signed in. Use <strong>Open Tornado</strong> if you need the tab.</li>
+          <li>Right-click the page → Inspect → <strong>Application</strong> → <strong>Cookies</strong> → <code>https://www4.tornadomovies.co</code> (not Shared storage).</li>
+          <li>Copy the <strong>Value</strong> for <code>_identity-frontend1</code> and <code>advanced-frontend</code>. Skip Google cookies such as <code>_GRECAPTCHA</code>.</li>
+          <li>Paste one line below as <code>_identity-frontend1=…; advanced-frontend=…</code>, then Save cookie.</li>
+        </ol>
+        <form id="cookie-form" class="login-form">
+          <input id="tornado-cookie" type="text" placeholder="_identity-frontend1=…; advanced-frontend=…" autocomplete="off" />
+          <button type="submit" class="ghost">Save cookie</button>
+        </form>
+        <form id="login-form" class="login-form">
+          <button type="submit" class="ghost">Open Tornado</button>
+        </form>
+        <p id="account-error" class="muted account-error" hidden></p>
+        <div id="login-open-panel" hidden></div>
+        <details class="cookie-fallback">
+          <summary>Captcha method (optional)</summary>
+          <p class="muted">Only if cookie paste is not available. Drag <a id="captcha-bookmarklet" class="bookmarklet" href="#">Put Finish and close on Tornado</a> to the bookmarks bar, solve the captcha, click that bookmark, then click the blue bar. Do not click Tornado’s Login.</p>
+        </details>
+      </section>
+      <section class="meter-card" id="session-card">
+        <div class="meter-head">
+          <span>Tornado session</span>
+          <span id="session-label">Checking…</span>
+        </div>
+        <dl class="diag-list" id="session-diag"></dl>
+        <div class="queue-run-bar">
+          <button id="refresh-session" type="button" class="ghost">Refresh session</button>
+          <button id="copy-status-json" type="button" class="ghost">Copy status JSON</button>
+        </div>
+      </section>
+      <section class="meter-card" id="health-card">
+        <div class="meter-head">
+          <span>NAS health</span>
+          <span id="health-label">Checking…</span>
+        </div>
+        <dl class="diag-list" id="health-diag"></dl>
+      </section>
+    </main>
+
     <main id="view-show" class="view" hidden>
       <button id="back-library" type="button" class="ghost">← Library</button>
       <section class="show-hero">
-        <div id="show-poster" class="poster show-hero-poster"></div>
+        <div class="show-hero-art">
+          <div id="show-poster" class="poster show-hero-poster"></div>
+          <button id="show-freezer-action" type="button" class="freezer-corner" title="Put in Freezer" aria-label="Put in Freezer">
+            <img src="/icons/freezer.png" width="26" height="26" alt="" draggable="false">
+          </button>
+        </div>
         <div>
           <p class="kind">Series</p>
           <h1 id="show-title">Series</h1>
           <p id="show-meta" class="muted"></p>
-          <button id="show-freezer-action" type="button" class="ghost">Put in Freezer</button>
         </div>
       </section>
       <div id="episode-list" class="episode-list"></div>
     </main>
+    </div>
 
     <dialog id="player-dialog">
       <form method="dialog" class="player-bar">
@@ -167,6 +245,9 @@
       <video id="player" controls playsinline></video>
     </dialog>
 
-    <script src="/app.js?v=22"></script>
+    <p id="status" class="status-banner" hidden role="status"></p>
+    <script src="/vendor/anime.min.js"></script>
+    <script src="/sounds.js?v=23"></script>
+    <script src="/app.js?v=43"></script>
   </body>
 </html>

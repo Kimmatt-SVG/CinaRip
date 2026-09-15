@@ -1,4 +1,26 @@
 const statusEl = document.getElementById("status");
+
+function showStatus(message, { error = false, kind = "notice" } = {}) {
+  if (!statusEl) return;
+  const text = String(message || "").trim();
+  if (!text) {
+    hideStatus();
+    return;
+  }
+  statusEl.textContent = text;
+  statusEl.hidden = false;
+  statusEl.classList.toggle("is-error", Boolean(error));
+  statusEl.dataset.kind = kind;
+}
+
+function hideStatus() {
+  if (!statusEl) return;
+  statusEl.textContent = "";
+  statusEl.hidden = true;
+  statusEl.classList.remove("is-error");
+  delete statusEl.dataset.kind;
+}
+
 const summaryEl = document.getElementById("library-summary");
 const storageLabel = document.getElementById("storage-label");
 const storageBar = document.getElementById("storage-bar");
@@ -8,9 +30,17 @@ const viewLibrary = document.getElementById("view-library");
 const viewSearch = document.getElementById("view-search");
 const viewShow = document.getElementById("view-show");
 const viewFreezer = document.getElementById("view-freezer");
+const viewSettings = document.getElementById("view-settings");
+const viewStage = document.querySelector(".view-stage");
+const tabViewOrder = [viewLibrary, viewSearch, viewFreezer, viewSettings].filter(Boolean);
+const VIEW_SWITCH_MS = 340;
+const VIEW_SLIDE_PX = 28;
+let activeViewEl = null;
+let viewSwitchGen = 0;
 const tabLibrary = document.getElementById("tab-library");
 const tabSearch = document.getElementById("tab-search");
 const tabFreezer = document.getElementById("tab-freezer");
+const tabSettings = document.getElementById("tab-settings");
 const freezerList = document.getElementById("freezer-list");
 const freezerFilter = document.getElementById("freezer-filter");
 const freezerSummary = document.getElementById("freezer-summary");
@@ -60,6 +90,341 @@ let tvShowPlan = null;
 let catalogTvScanToken = 0;
 let lastQueueSnapshot = { items: [], counts: {}, running: false };
 let lastDoneCount = 0;
+let lastQueueRunning = null;
+const heardFailedIds = new Set();
+let playedQueueFinish = false;
+let lastRouteKey = null;
+let lastTornadoStatus = null;
+let lastHealth = null;
+let shellMotionDone = false;
+let jobCardVisible = false;
+const seenQueueIds = new Set();
+const motionSig = Object.create(null);
+const reduceMotionMq = window.matchMedia("(prefers-reduced-motion: reduce)");
+const splashEl = document.getElementById("splash");
+const splashLabelEl = document.getElementById("splash-label");
+const splashReadyBtn = document.getElementById("splash-ready");
+const SPLASH_MIN_MS = 750;
+let splashDismissed = false;
+
+function canMotion() {
+  return typeof window.anime === "function" && !reduceMotionMq.matches;
+}
+
+function markMotionReady() {
+  document.documentElement.classList.add("motion-ready");
+}
+
+function motionTargets(targets) {
+  if (!targets) return [];
+  if (targets.nodeType === 1) return [targets];
+  return Array.from(targets).filter((el) => el && el.nodeType === 1);
+}
+
+function clearMotionStyles(el) {
+  el.style.removeProperty("opacity");
+  el.style.removeProperty("transform");
+  el.style.removeProperty("will-change");
+}
+
+function motionFade(targets, options = {}) {
+  const list = motionTargets(targets);
+  if (!list.length) {
+    options.complete?.();
+    return;
+  }
+  if (!canMotion()) {
+    list.forEach(clearMotionStyles);
+    options.complete?.();
+    return;
+  }
+  const from = { opacity: 0, translateY: options.fromY ?? 14 };
+  if (options.scaleFrom != null) from.scale = options.scaleFrom;
+  window.anime.set(list, from);
+  list.forEach((el) => {
+    el.style.willChange = "transform, opacity";
+  });
+  const props = {
+    targets: list,
+    opacity: 1,
+    translateY: 0,
+    duration: options.duration ?? 420,
+    delay: options.delay ?? 0,
+    easing: options.easing || "easeOutCubic",
+    complete() {
+      list.forEach(clearMotionStyles);
+      options.complete?.();
+    }
+  };
+  if (options.scaleFrom != null) props.scale = 1;
+  window.anime(props);
+}
+
+function motionStagger(nodes, options = {}) {
+  const list = motionTargets(nodes);
+  const key = options.key || "cards";
+  const sig = list.length
+    ? `${list.length}:${list.map((el) => (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 24)).join("~")}`.slice(0, 400)
+    : "empty";
+  if (!options.force && motionSig[key] === sig) return false;
+  motionSig[key] = sig;
+  if (options.skip || !list.length) {
+    options.onReady?.(list);
+    return true;
+  }
+  motionFade(list, {
+    fromY: options.fromY ?? 16,
+    duration: options.duration ?? 400,
+    delay: (_, i) => Math.min(i * (options.stagger ?? 24), 360),
+    complete() {
+      options.onReady?.(list);
+    }
+  });
+  return true;
+}
+
+const TILE_TILT_MAX = 8;
+const TILE_TILT_SCALE = 1.03;
+const TILE_TILT_Z = 14;
+let activeTiltCard = null;
+let tiltRaf = 0;
+let pendingTilt = null;
+
+function tileFace(card) {
+  if (!card) return null;
+  if (card.classList.contains("catalog-card")) return card.querySelector(".catalog-card-poster");
+  return card.querySelector(".poster");
+}
+
+function tileFloatWrap(card) {
+  if (!card) return null;
+  return card.querySelector(":scope > .tile-scene > .tile-float-wrap") || card.querySelector(".tile-float-wrap");
+}
+
+function ensureTileScene(card) {
+  const existing = tileFloatWrap(card);
+  if (existing) return existing;
+  const face = tileFace(card);
+  if (!face) return null;
+  const scene = document.createElement("div");
+  scene.className = "tile-scene";
+  const wrap = document.createElement("div");
+  wrap.className = "tile-float-wrap";
+  face.replaceWith(scene);
+  wrap.appendChild(face);
+  scene.appendChild(wrap);
+  return wrap;
+}
+
+function closestTile(node) {
+  const card = node?.closest?.(".library-card, .catalog-card");
+  if (!card) return null;
+  if (card.closest("#catalog-detail, #view-show, .show-hero")) return null;
+  return card;
+}
+
+function splashBlocksTiles() {
+  return Boolean(splashEl && !splashEl.hidden);
+}
+
+function canTiltPointer(event) {
+  if (!canMotion() || splashBlocksTiles() || !event) return false;
+  return Number.isFinite(event.clientX) && Number.isFinite(event.clientY);
+}
+
+function clearFaceTilt(face) {
+  if (!face) return;
+  if (typeof window.anime === "function") window.anime.remove(face);
+  face.classList.remove("is-tilting");
+  face.style.removeProperty("transform");
+  face.style.removeProperty("will-change");
+}
+
+function stopTileFloat(card) {
+  card.classList.remove("tile-float", "is-tilting");
+  const wrap = tileFloatWrap(card);
+  if (wrap) {
+    wrap.classList.remove("tile-float", "is-tilting");
+    wrap.style.removeProperty("--tile-float-dur");
+    wrap.style.removeProperty("--tile-float-delay");
+    wrap.style.removeProperty("--tile-float-x-dur");
+    wrap.style.removeProperty("--tile-float-x-delay");
+    wrap.style.removeProperty("--tile-float-x-amp");
+    wrap.style.removeProperty("will-change");
+  }
+  card.style.removeProperty("--tile-float-dur");
+  card.style.removeProperty("--tile-float-delay");
+  card.style.removeProperty("will-change");
+  clearFaceTilt(tileFace(card));
+}
+
+function stopTileFloatIn(root) {
+  if (!root) return;
+  root.querySelectorAll(".library-card, .catalog-card").forEach(stopTileFloat);
+}
+
+function startTileFloat(cards) {
+  const list = motionTargets(cards);
+  if (!canMotion()) {
+    list.forEach(stopTileFloat);
+    return;
+  }
+  list.forEach((card, i) => {
+    const wrap = ensureTileScene(card);
+    if (!wrap) return;
+    wrap.classList.add("tile-float");
+    wrap.style.setProperty("--tile-float-dur", `${2.8 + (i % 5) * 0.45}s`);
+    wrap.style.setProperty("--tile-float-delay", `${-((i * 0.41) % 2.6)}s`);
+    wrap.style.setProperty("--tile-float-x-dur", `${5.6 + (i % 7) * 0.5}s`);
+    wrap.style.setProperty("--tile-float-x-delay", `${-((i * 0.67) % 4.2)}s`);
+    wrap.style.setProperty("--tile-float-x-amp", `${(i % 2 === 0 ? 1 : -1) * (2 + (i % 2))}px`);
+  });
+}
+
+function applyTileTilt(card, event) {
+  const face = tileFace(card);
+  if (!face) return;
+  const rect = (tileFloatWrap(card) || card).getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const y = ((event.clientY - rect.top) / rect.height) * 2 - 1;
+  pendingTilt = {
+    face,
+    rotateY: Math.max(-1, Math.min(1, x)) * TILE_TILT_MAX,
+    rotateX: Math.max(-1, Math.min(1, -y)) * TILE_TILT_MAX
+  };
+  if (tiltRaf) return;
+  tiltRaf = window.requestAnimationFrame(() => {
+    tiltRaf = 0;
+    const next = pendingTilt;
+    pendingTilt = null;
+    if (!next || !canMotion()) return;
+    window.anime.set(next.face, {
+      rotateX: next.rotateX,
+      rotateY: next.rotateY,
+      scale: TILE_TILT_SCALE,
+      translateZ: TILE_TILT_Z
+    });
+  });
+}
+
+function resetTileTilt(card) {
+  const face = tileFace(card);
+  if (!face) return;
+  pendingTilt = null;
+  if (!canMotion()) {
+    clearFaceTilt(face);
+    return;
+  }
+  window.anime.remove(face);
+  window.anime({
+    targets: face,
+    rotateX: 0,
+    rotateY: 0,
+    scale: 1,
+    translateZ: 0,
+    duration: 280,
+    easing: "easeOutCubic",
+    complete() {
+      if (activeTiltCard === card) return;
+      clearFaceTilt(face);
+    }
+  });
+}
+
+function enterTile(card) {
+  if (activeTiltCard && activeTiltCard !== card) {
+    const prev = activeTiltCard;
+    activeTiltCard = null;
+    const prevFace = tileFace(prev);
+    if (prevFace) prevFace.classList.remove("is-tilting");
+    resetTileTilt(prev);
+  }
+  activeTiltCard = card;
+  const face = tileFace(card);
+  if (face) {
+    window.anime.remove(face);
+    face.classList.add("is-tilting");
+    face.style.willChange = "transform";
+  }
+}
+
+function leaveTile(card) {
+  if (activeTiltCard === card) activeTiltCard = null;
+  const face = tileFace(card);
+  if (face) face.classList.remove("is-tilting");
+  resetTileTilt(card);
+}
+
+function onTilePointerMove(event) {
+  if (!canTiltPointer(event)) {
+    if (activeTiltCard) leaveTile(activeTiltCard);
+    return;
+  }
+  const card = closestTile(event.target);
+  if (!card) {
+    if (activeTiltCard) leaveTile(activeTiltCard);
+    return;
+  }
+  if (activeTiltCard !== card) enterTile(card);
+  applyTileTilt(card, event);
+}
+
+function teardownAllTileMotion() {
+  activeTiltCard = null;
+  pendingTilt = null;
+  document.querySelectorAll(".library-card, .catalog-card").forEach(stopTileFloat);
+}
+
+function wireTileMotion() {
+  document.addEventListener("pointermove", onTilePointerMove, { passive: true });
+  document.addEventListener("pointerleave", () => {
+    if (activeTiltCard) leaveTile(activeTiltCard);
+  });
+  const onReduce = () => {
+    if (canMotion()) {
+      startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
+      return;
+    }
+    teardownAllTileMotion();
+  };
+  if (typeof reduceMotionMq.addEventListener === "function") reduceMotionMq.addEventListener("change", onReduce);
+  else if (typeof reduceMotionMq.addListener === "function") reduceMotionMq.addListener(onReduce);
+}
+
+function bindTileGrid(nodes, options = {}) {
+  const list = motionTargets(nodes);
+  const changed = motionStagger(list, {
+    key: options.key,
+    skip: options.skip,
+    force: options.force,
+    stagger: options.stagger,
+    onReady: startTileFloat
+  });
+  if (!changed) startTileFloat(list);
+}
+
+function setGridHtml(el, html, key) {
+  if (!el) return false;
+  const sigKey = `${key}:html`;
+  if (motionSig[sigKey] === html) return false;
+  stopTileFloatIn(el);
+  el.innerHTML = html;
+  motionSig[sigKey] = html;
+  return true;
+}
+
+if (typeof window.anime !== "function") {
+  document.documentElement.classList.remove("motion-on");
+  markMotionReady();
+}
+
+window.setTimeout(markMotionReady, 1600);
+
+function noteError(message) {
+  window.CinaRipAudio?.error();
+  return message || "Something went wrong.";
+}
 
 async function getJson(url) {
   const res = await fetch(url);
@@ -94,6 +459,19 @@ function posterStyle(posterId, posterUrl) {
   return "";
 }
 
+function freezerCornerButton(id, { thaw = false } = {}) {
+  const key = thaw ? "thaw" : "freeze";
+  const label = thaw ? "Thaw" : "Put in Freezer";
+  const stateClass = thaw ? " freezer-corner--thaw" : "";
+  return `<button type="button" class="freezer-corner${stateClass}" data-${key}="${escapeAttr(id)}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
+    <img src="/icons/freezer.png" width="26" height="26" alt="" draggable="false">
+  </button>`;
+}
+
+function wrapPosterMarkup(posterHtml, overlayHtml = "") {
+  return `<div class="tile-scene"><div class="tile-float-wrap">${posterHtml}${overlayHtml}</div></div>`;
+}
+
 function formatBytes(bytes) {
   const n = Number(bytes) || 0;
   if (n < 1024) return `${n} B`;
@@ -121,13 +499,19 @@ function play(id, title) {
   playerTitle.textContent = title;
   player.src = `/api/stream/${id}`;
   playerDialog.showModal();
-  player.play().catch(() => {});
+  motionFade(playerDialog, { fromY: 12, duration: 280, scaleFrom: 0.97 });
+  window.CinaRipAudio?.onVideoOpen();
+  player.play().catch(() => {
+    window.CinaRipAudio?.error();
+  });
 }
 
 playerDialog.addEventListener("close", () => {
+  window.CinaRipAudio?.onVideoClose();
   player.pause();
   player.removeAttribute("src");
   player.load();
+  clearMotionStyles(playerDialog);
 });
 
 function showIdFromHash() {
@@ -141,6 +525,143 @@ function isSearchHash() {
 
 function isFreezerHash() {
   return String(location.hash || "").startsWith("#/freezer");
+}
+
+function isSettingsHash() {
+  return String(location.hash || "").startsWith("#/settings");
+}
+
+function allViewEls() {
+  return [viewLibrary, viewSearch, viewShow, viewFreezer, viewSettings].filter(Boolean);
+}
+
+function clearViewMotion(el) {
+  if (!el) return;
+  if (typeof window.anime === "function") window.anime.remove(el);
+  el.classList.remove("is-leaving", "is-entering");
+  clearMotionStyles(el);
+}
+
+function resetViewStage() {
+  if (!viewStage) return;
+  viewStage.classList.remove("is-transitioning");
+  viewStage.style.removeProperty("min-height");
+}
+
+function settleViews(el) {
+  viewSwitchGen += 1;
+  resetViewStage();
+  allViewEls().forEach((view) => {
+    clearViewMotion(view);
+    view.hidden = view !== el;
+  });
+  activeViewEl = el;
+}
+
+function showView(el) {
+  settleViews(el);
+}
+
+function tabViewIndex(el) {
+  const index = tabViewOrder.indexOf(el);
+  return index < 0 ? 0 : index;
+}
+
+function transitionViews(to, { enterOnly = false } = {}) {
+  if (!to) return;
+  const from = activeViewEl;
+  if (from === to) {
+    if (to.hidden) settleViews(to);
+    return;
+  }
+
+  const canAnimate = Boolean(
+    from &&
+      !from.hidden &&
+      canMotion() &&
+      shellMotionDone &&
+      !enterOnly
+  );
+  if (!canAnimate) {
+    settleViews(to);
+    if (enterOnly && canMotion() && shellMotionDone) {
+      motionFade(to, { fromY: 16, duration: 380 });
+    }
+    return;
+  }
+
+  const gen = ++viewSwitchGen;
+  const goingRight = tabViewIndex(to) >= tabViewIndex(from);
+  const outX = goingRight ? -VIEW_SLIDE_PX : VIEW_SLIDE_PX;
+  const inX = goingRight ? VIEW_SLIDE_PX : -VIEW_SLIDE_PX;
+
+  allViewEls().forEach((view) => {
+    if (view === from || view === to) return;
+    clearViewMotion(view);
+    view.hidden = true;
+  });
+
+  if (typeof window.anime === "function") {
+    window.anime.remove(from);
+    window.anime.remove(to);
+  }
+
+  const fromH = from.offsetHeight;
+  from.classList.add("is-leaving");
+  from.classList.remove("is-entering");
+  from.hidden = false;
+  from.style.willChange = "transform, opacity";
+
+  to.classList.add("is-entering");
+  to.classList.remove("is-leaving");
+  to.hidden = false;
+  to.style.willChange = "transform, opacity";
+  window.anime.set(to, { opacity: 0, translateX: inX, translateY: 0 });
+  if (viewStage) {
+    viewStage.classList.add("is-transitioning");
+    viewStage.style.minHeight = `${Math.max(fromH, to.offsetHeight)}px`;
+  }
+
+  activeViewEl = to;
+
+  let pending = 2;
+  let settled = false;
+  const settle = () => {
+    if (settled || gen !== viewSwitchGen) return;
+    settled = true;
+    window.clearTimeout(safety);
+    resetViewStage();
+    clearViewMotion(from);
+    from.hidden = true;
+    clearViewMotion(to);
+    to.hidden = false;
+    startTileFloat(to.querySelectorAll(".library-card, .catalog-card"));
+  };
+  const finish = () => {
+    pending -= 1;
+    if (pending > 0) return;
+    settle();
+  };
+  const safety = window.setTimeout(settle, VIEW_SWITCH_MS + 120);
+
+  window.anime({
+    targets: from,
+    opacity: 0,
+    translateX: outX,
+    translateY: 0,
+    duration: VIEW_SWITCH_MS,
+    easing: "easeInCubic",
+    complete: finish
+  });
+  window.anime({
+    targets: to,
+    opacity: 1,
+    translateX: 0,
+    translateY: 0,
+    duration: VIEW_SWITCH_MS,
+    easing: "easeOutCubic",
+    complete: finish
+  });
 }
 
 function tornadoLoginUrl() {
@@ -217,14 +738,16 @@ function recaptchaFromHash() {
 
 async function finishCaptchaLogin(recaptcha) {
   if (!recaptcha) return;
-  history.replaceState(null, "", "#/search");
-  accountLabel.textContent = "Finishing sign-in…";
+  history.replaceState(null, "", "#/settings");
+  route();
+  if (accountLabel) accountLabel.textContent = "Finishing sign-in…";
   try {
     const result = await postJson("/api/tornado/login", { recaptcha });
     accountLabel.textContent = result.loggedIn === true ? "Signed in" : accountLabel.textContent;
     await refreshAccount();
   } catch (error) {
     accountLabel.textContent = error.message || "Login failed";
+    noteError();
   }
 }
 
@@ -269,11 +792,14 @@ function showCatalogDetail() {
   if (catalogDetail) catalogDetail.hidden = false;
   if (searchList) searchList.hidden = true;
   if (catalogResultsHead) catalogResultsHead.hidden = true;
+  if (catalogDetail) motionFade(catalogDetail, { fromY: 14, duration: 360 });
 }
 
 function renderSearch() {
   if (!searchResults.length) {
+    stopTileFloatIn(searchList);
     searchList.innerHTML = "";
+    motionSig["search:html"] = "";
     if (catalogResultsHead) catalogResultsHead.hidden = true;
     return;
   }
@@ -285,7 +811,9 @@ function renderSearch() {
   }
   if (catalogResultsHead) catalogResultsHead.hidden = Boolean(catalogDetail && catalogDetail.hidden === false);
 
+  stopTileFloatIn(searchList);
   searchList.innerHTML = "";
+  motionSig["search:html"] = "search";
   for (const movie of searchResults) {
     const card = document.createElement("button");
     card.type = "button";
@@ -301,11 +829,17 @@ function renderSearch() {
     badge.textContent = isCatalogTvItem(movie) ? "TV" : "Movie";
     poster.appendChild(badge);
 
-    const title = document.createElement("div");
-    title.className = "catalog-card-title";
-    title.textContent = movie.title || (isCatalogTvItem(movie) ? "TV Show" : "Movie");
+    const scene = document.createElement("div");
+    scene.className = "tile-scene";
+    const wrap = document.createElement("div");
+    wrap.className = "tile-float-wrap";
+    wrap.appendChild(poster);
+    scene.appendChild(wrap);
 
-    card.append(poster, title);
+    const name = movie.title || (isCatalogTvItem(movie) ? "TV Show" : "Movie");
+    card.title = name;
+    card.setAttribute("aria-label", name);
+    card.append(scene);
     if (movie.year) {
       const year = document.createElement("div");
       year.className = "catalog-card-year";
@@ -316,6 +850,14 @@ function renderSearch() {
     card.addEventListener("click", () => openCatalogMovie(movie));
     searchList.appendChild(card);
   }
+  if (catalogResultsHead && !catalogResultsHead.hidden) {
+    motionFade(catalogResultsHead, { fromY: 8, duration: 320 });
+  }
+  bindTileGrid(searchList.querySelectorAll(".catalog-card"), {
+    key: "search",
+    force: true,
+    stagger: 28
+  });
 }
 
 function renderSeasonSelect(select, seasons, selectedSeason = null) {
@@ -433,7 +975,7 @@ async function loadCatalogTvShow(movie, season = null) {
   } catch (error) {
     if (token !== catalogTvScanToken) return { ok: false, cancelled: true };
     clearCatalogTvEpisodePanel(error.message || "Could not scan this show.");
-    if (catalogDetailStatus) catalogDetailStatus.textContent = error.message || "TV scan failed.";
+    if (catalogDetailStatus) catalogDetailStatus.textContent = noteError(error.message || "TV scan failed.");
     return { ok: false, error: error.message };
   }
 }
@@ -490,7 +1032,7 @@ async function queueSelectedCatalog() {
       }
       await refreshJobs();
     } catch (error) {
-      if (catalogDetailStatus) catalogDetailStatus.textContent = error.message || "Could not add episodes.";
+      if (catalogDetailStatus) catalogDetailStatus.textContent = noteError(error.message || "Could not add episodes.");
     }
     return;
   }
@@ -504,7 +1046,7 @@ async function queueSelectedCatalog() {
     if (catalogDetailStatus) catalogDetailStatus.textContent = "Added to download queue.";
     await refreshJobs();
   } catch (error) {
-    if (catalogDetailStatus) catalogDetailStatus.textContent = error.message || "Could not add to queue.";
+    if (catalogDetailStatus) catalogDetailStatus.textContent = noteError(error.message || "Could not add to queue.");
   }
 }
 
@@ -523,25 +1065,23 @@ function freezerCard(item, options = {}) {
     ? `<button type="button" class="ghost freezer-btn" data-restore="${escapeAttr(item.id)}">Restore original</button>
        <button type="button" class="ghost freezer-btn" data-discard="${escapeAttr(item.id)}">Discard original</button>`
     : "";
-  const poster = isShow
-    ? `<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-show="${escapeAttr(item.id)}">
+  const name = escapeAttr(item.title);
+  const poster = wrapPosterMarkup(isShow
+    ? `<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-show="${escapeAttr(item.id)}" title="${name}" aria-label="${name}">
           <em>Series</em>
-          <span>${escapeHtml(item.title)}</span>
         </button>`
-    : `<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-play="${item.id}" data-title="${escapeAttr(item.title)}">
+    : `<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-play="${item.id}" data-title="${name}" title="${name}" aria-label="${name}">
           <em data-kind="movie">Movie</em>
-          <span>${escapeHtml(item.title)}</span>
-        </button>`;
+        </button>`, freezerCornerButton(item.id, { thaw: true }));
   return `
     <article class="library-card">
       ${poster}
       <p class="freezer-status">${escapeHtml(compressStatusLabel(item))}</p>
-      <button type="button" class="ghost freezer-btn" data-thaw="${escapeAttr(item.id)}">Thaw</button>
       ${restore}
     </article>`;
 }
 
-function renderFreezerPage() {
+function renderFreezerPage(options = {}) {
   if (!freezerList) return;
   const q = (freezerFilter?.value || "").trim().toLowerCase();
   const matches = (title) => !q || String(title || "").toLowerCase().includes(q);
@@ -558,54 +1098,63 @@ function renderFreezerPage() {
       : "";
   }
   if (!movies.length && !shows.length) {
-    freezerList.innerHTML = `<p class="empty">Nothing in Freezer yet. Use Put in Freezer on Library, then download the encode worker.</p>`;
+    setGridHtml(
+      freezerList,
+      `<p class="empty">Nothing in Freezer yet. Tap the snowflake on Library posters, then download the encode worker.</p>`,
+      "freezer"
+    );
+    bindTileGrid([], { key: "freezer", skip: options.skipMotion });
     return;
   }
   const cards = [
     ...movies.map((item) => freezerCard(item)),
     ...shows.map((show) => freezerCard(show, { isShow: true }))
   ].join("");
-  freezerList.innerHTML = `<div class="library">${cards}</div>`;
+  setGridHtml(freezerList, `<div class="library">${cards}</div>`, "freezer");
+  bindTileGrid(freezerList.querySelectorAll(".library-card"), {
+    key: "freezer",
+    skip: options.skipMotion
+  });
 }
 
 function libraryCard(item, options = {}) {
   const frozen = Boolean(options.frozen || item.frozen);
   const isShow = item.kind === "tv-show" || options.isShow;
-  const action = frozen
-    ? `<button type="button" class="ghost freezer-btn" data-thaw="${escapeAttr(item.id)}">Thaw</button>`
-    : `<button type="button" class="ghost freezer-btn" data-freeze="${escapeAttr(item.id)}">Put in Freezer</button>`;
+  const freezeIcon = freezerCornerButton(item.id, { thaw: frozen });
+  const name = escapeAttr(item.title);
   if (isShow) {
     return `
       <article class="library-card">
-        <button type="button" class="poster" style="${posterStyle(item.posterId)}" data-show="${escapeAttr(item.id)}">
+        ${wrapPosterMarkup(`<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-show="${escapeAttr(item.id)}" title="${name}" aria-label="${name}">
           <em>Series</em>
-          <span>${escapeHtml(item.title)}</span>
-        </button>
-        ${action}
+        </button>`, freezeIcon)}
       </article>`;
   }
   return `
     <article class="library-card">
-      <button type="button" class="poster" style="${posterStyle(item.posterId)}" data-play="${item.id}" data-title="${escapeAttr(item.title)}">
-        <em data-kind="movie">Movie</em>
-        <span>${escapeHtml(item.title)}</span>
-      </button>
-      ${action}
+      ${wrapPosterMarkup(`<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-play="${item.id}" data-title="${name}" title="${name}" aria-label="${name}">
+          <em data-kind="movie">Movie</em>
+        </button>`, freezeIcon)}
     </article>`;
 }
 
-function renderLibrary() {
+function renderLibrary(options = {}) {
   const movies = (library.movies || []).filter((item) => matchesFilter(item.title));
   const shows = (library.shows || []).filter((show) => matchesFilter(show.title));
   const frozenCount = (library.frozen?.movieCount || 0) + (library.frozen?.showCount || 0);
 
   if (!movies.length && !shows.length && !frozenCount) {
-    libraryList.innerHTML = `<p class="empty">No titles match. If this is empty after a scan, check that Docker mounted /Public/Videos.</p>
+    setGridHtml(
+      libraryList,
+      `<p class="empty">No titles match. If this is empty after a scan, check that Docker mounted /Public/Videos.</p>
       <section class="freezer-section freezer-empty">
         <h2>Freezer</h2>
         <p class="muted">Pack titles away, then compress them on a PC.</p>
         <a class="ghost primary-action freezer-open" href="#/freezer">Open Freezer</a>
-      </section>`;
+      </section>`,
+      "library"
+    );
+    bindTileGrid([], { key: "library", skip: options.skipMotion });
     return;
   }
 
@@ -617,7 +1166,11 @@ function renderLibrary() {
         <a class="ghost primary-action freezer-open" href="#/freezer">Open Freezer</a>
       </section>`;
 
-  libraryList.innerHTML = `${mainGrid}${freezerSection}`;
+  setGridHtml(libraryList, `${mainGrid}${freezerSection}`, "library");
+  bindTileGrid(libraryList.querySelectorAll(".library-card"), {
+    key: "library",
+    skip: options.skipMotion
+  });
 }
 
 function findShow(showId) {
@@ -637,11 +1190,15 @@ function renderShow(show) {
   if (showFreezerAction) {
     showFreezerAction.hidden = false;
     if (show.frozen) {
-      showFreezerAction.textContent = "Thaw";
+      showFreezerAction.title = "Thaw";
+      showFreezerAction.setAttribute("aria-label", "Thaw");
+      showFreezerAction.classList.add("freezer-corner--thaw");
       showFreezerAction.dataset.thaw = show.id;
       delete showFreezerAction.dataset.freeze;
     } else {
-      showFreezerAction.textContent = "Put in Freezer";
+      showFreezerAction.title = "Put in Freezer";
+      showFreezerAction.setAttribute("aria-label", "Put in Freezer");
+      showFreezerAction.classList.remove("freezer-corner--thaw");
       showFreezerAction.dataset.freeze = show.id;
       delete showFreezerAction.dataset.thaw;
     }
@@ -678,53 +1235,46 @@ function renderShow(show) {
 function route() {
   const searching = isSearchHash();
   const freezer = isFreezerHash();
+  const settings = isSettingsHash();
   const showId = showIdFromHash();
-  tabLibrary.classList.toggle("is-active", !searching && !freezer && !showId);
+  tabLibrary.classList.toggle("is-active", !searching && !freezer && !settings && !showId);
   tabSearch.classList.toggle("is-active", searching);
   if (tabFreezer) tabFreezer.classList.toggle("is-active", freezer);
+  if (tabSettings) tabSettings.classList.toggle("is-active", settings);
+  if (filterInput) filterInput.hidden = searching || freezer || settings || Boolean(showId);
 
+  let incoming = viewLibrary;
   if (searching) {
-    viewLibrary.hidden = true;
-    viewSearch.hidden = false;
-    viewShow.hidden = true;
-    if (viewFreezer) viewFreezer.hidden = true;
     document.title = "CinaRip · Search";
-    return;
-  }
-
-  if (freezer) {
-    viewLibrary.hidden = true;
-    viewSearch.hidden = true;
-    viewShow.hidden = true;
-    if (viewFreezer) viewFreezer.hidden = false;
+    incoming = viewSearch;
+  } else if (freezer) {
     renderFreezerPage();
     document.title = "CinaRip · Freezer";
-    return;
-  }
-
-  if (!showId) {
-    viewLibrary.hidden = false;
-    viewSearch.hidden = true;
-    viewShow.hidden = true;
-    if (viewFreezer) viewFreezer.hidden = true;
+    incoming = viewFreezer;
+  } else if (settings) {
+    document.title = "CinaRip · Settings";
+    incoming = viewSettings;
+  } else if (!showId) {
     const frozenCount = (library.frozen?.movieCount || 0) + (library.frozen?.showCount || 0);
     const total = (library.movieCount || 0) + (library.showCount || 0) + frozenCount;
     document.title = total ? `CinaRip Library · ${total} titles` : "CinaRip Library";
-    return;
+    incoming = viewLibrary;
+  } else {
+    const show = findShow(showId);
+    if (!show) {
+      showStatus("Series not found.", { error: true });
+      closeShow();
+      return;
+    }
+    renderShow(show);
+    incoming = viewShow;
   }
 
-  const show = findShow(showId);
-  if (!show) {
-    statusEl.textContent = "Series not found.";
-    closeShow();
-    return;
-  }
-
-  viewLibrary.hidden = true;
-  viewSearch.hidden = true;
-  viewShow.hidden = false;
-  if (viewFreezer) viewFreezer.hidden = true;
-  renderShow(show);
+  const key = searching ? "search" : freezer ? "freezer" : settings ? "settings" : showId ? `show:${showId}` : "library";
+  const changed = lastRouteKey !== key;
+  lastRouteKey = key;
+  if (changed && settings) refreshSettingsDiagnostics().catch(() => {});
+  if (changed) transitionViews(incoming, { enterOnly: incoming === viewShow });
 }
 
 function escapeHtml(value) {
@@ -777,9 +1327,11 @@ function renderDownloadQueue(snapshot) {
     empty.className = "download-queue-empty";
     empty.textContent = "Add titles, then click Download. Files are saved to the NAS.";
     downloadQueueList.appendChild(empty);
+    seenQueueIds.clear();
     return;
   }
 
+  const freshRows = [];
   for (const item of items) {
     const row = document.createElement("li");
     row.className = `download-queue-item status-${item.status} kind-${item.kind === "episode" ? "episode" : "movie"}`;
@@ -819,13 +1371,24 @@ function renderDownloadQueue(snapshot) {
           await postJson("/api/downloads/remove", { id: item.id });
           await refreshJobs();
         } catch (error) {
-          searchStatus.textContent = error.message || "Could not remove item.";
+          searchStatus.textContent = noteError(error.message || "Could not remove item.");
         }
       });
       row.appendChild(removeButton);
     }
 
+    if (!seenQueueIds.has(item.id)) freshRows.push(row);
     downloadQueueList.appendChild(row);
+  }
+
+  seenQueueIds.clear();
+  for (const item of items) seenQueueIds.add(item.id);
+  if (freshRows.length) {
+    motionFade(freshRows, {
+      fromY: 10,
+      duration: 320,
+      delay: (_, i) => Math.min(i * 30, 240)
+    });
   }
 }
 
@@ -846,23 +1409,47 @@ function renderJobs(data) {
 
   if (!current && !active.length) {
     jobCard.hidden = true;
+    if (jobCardVisible) clearMotionStyles(jobCard);
+    jobCardVisible = false;
     return;
   }
 
+  const appearing = !jobCardVisible;
   const percent = current?.percent || 0;
   jobCard.hidden = false;
+  jobCardVisible = true;
   jobTitle.textContent = current?.title || active[0]?.title || "Download";
   jobLabel.textContent = current ? `${percent}%` : `${active.length} queued`;
   jobBar.style.width = `${percent}%`;
   jobPhase.textContent = current?.phase || `${active.length} item${active.length === 1 ? "" : "s"} waiting`;
+  if (appearing) motionFade(jobCard, { fromY: 10, duration: 360 });
 }
 
 async function refreshJobs() {
   const data = await getJson("/api/downloads");
+  const wasRunning = lastQueueRunning;
   renderJobs(data);
-  const doneCount = (data.items || []).filter((item) => item.status === "done").length;
+  const items = data.items || [];
+  const doneCount = items.filter((item) => item.status === "done").length;
   if (doneCount > lastDoneCount) refreshLibrary().catch(() => {});
   lastDoneCount = doneCount;
+
+  for (const item of items) {
+    if (item.status !== "failed" || heardFailedIds.has(item.id)) continue;
+    heardFailedIds.add(item.id);
+    if (wasRunning !== null) window.CinaRipAudio?.error();
+  }
+
+  const running = Boolean(data.running);
+  const stillWorking = items.some(
+    (item) => item.status === "pending" || item.status === "loading" || item.status === "downloading"
+  );
+  if (running) playedQueueFinish = false;
+  if (wasRunning === true && !running && !stillWorking && items.length && !playedQueueFinish) {
+    playedQueueFinish = true;
+    window.setTimeout(() => window.CinaRipAudio?.queueFinished(), 350);
+  }
+  lastQueueRunning = running;
 }
 
 const ACCOUNT_STATE_KEY = "cinarip.tornado.account";
@@ -881,6 +1468,88 @@ function setAccountError(message) {
   if (!el) return;
   el.textContent = message || "";
   el.hidden = !message;
+}
+
+function diagBool(value) {
+  if (value === true) return "Yes";
+  if (value === false) return "No";
+  return "—";
+}
+
+function renderDiagList(el, rows) {
+  if (!el) return;
+  el.innerHTML = rows
+    .map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`)
+    .join("");
+}
+
+function renderSessionDiag(data) {
+  lastTornadoStatus = data || lastTornadoStatus;
+  const sessionLabel = document.getElementById("session-label");
+  const sessionDiag = document.getElementById("session-diag");
+  if (!data) {
+    if (sessionLabel) sessionLabel.textContent = "Unavailable";
+    renderDiagList(sessionDiag, [
+      ["loggedIn", "—"],
+      ["hasCookies", "—"],
+      ["hasIdentity", "—"],
+      ["evidence", "—"],
+      ["error", "—"],
+      ["chromeTls", "—"]
+    ]);
+    return;
+  }
+  if (sessionLabel) {
+    if (data.loggedIn === true) sessionLabel.textContent = signedInLabel(data);
+    else if (data.loggedIn === false) sessionLabel.textContent = "Not signed in";
+    else sessionLabel.textContent = "Unconfirmed";
+  }
+  renderDiagList(sessionDiag, [
+    ["loggedIn", diagBool(data.loggedIn)],
+    ["hasCookies", diagBool(data.hasCookies)],
+    ["hasIdentity", diagBool(data.hasIdentity)],
+    ["evidence", data.evidence || "—"],
+    ["error", data.error || "—"],
+    ["chromeTls", diagBool(data.chromeTls)]
+  ]);
+}
+
+function renderHealthDiag(health) {
+  lastHealth = health || lastHealth;
+  const healthLabel = document.getElementById("health-label");
+  const healthDiag = document.getElementById("health-diag");
+  if (!health) {
+    if (healthLabel) healthLabel.textContent = "Unavailable";
+    renderDiagList(healthDiag, [
+      ["arch", "—"],
+      ["node", "—"],
+      ["memory", "—"],
+      ["videoRoot", "—"],
+      ["movies", "—"],
+      ["shows", "—"]
+    ]);
+    return;
+  }
+  const ram = health.memoryMb != null ? `${health.memoryMb} MB` : "—";
+  if (healthLabel) healthLabel.textContent = health.ok === false ? `Unreachable · ${ram}` : `Online · ${ram}`;
+  renderDiagList(healthDiag, [
+    ["arch", health.arch || "—"],
+    ["node", health.node || "—"],
+    ["memory", ram],
+    ["videoRoot", health.videoRoot || "—"],
+    ["movies", health.movieCount == null ? "—" : String(health.movieCount)],
+    ["shows", health.showCount == null ? "—" : String(health.showCount)]
+  ]);
+}
+
+async function refreshSettingsDiagnostics() {
+  const [session, health] = await Promise.all([
+    refreshAccount(),
+    getJson("/api/health").catch(() => null)
+  ]);
+  if (health) renderHealthDiag(health);
+  else if (!lastHealth) renderHealthDiag(null);
+  return { session, health };
 }
 
 function persistAccountState(data) {
@@ -921,16 +1590,16 @@ async function refreshAccount() {
   try {
     const data = await getJson("/api/tornado/status");
     if (data.loggedIn === true) {
-      accountLabel.textContent = signedInLabel(data);
+      if (accountLabel) accountLabel.textContent = signedInLabel(data);
       persistAccountState(data);
       setAccountError("");
     } else if (data.loggedIn === false && data.ok !== false && data.confirmed !== false) {
-      accountLabel.textContent = "Not signed in";
+      if (accountLabel) accountLabel.textContent = "Not signed in";
       persistAccountState(data);
       setAccountError("");
     } else {
       if (data.lastKnownLoggedIn || data.hasIdentity || data.hasCookies) {
-        if (!/^Signed in/i.test(accountLabel.textContent || "")) {
+        if (accountLabel && !/^Signed in/i.test(accountLabel.textContent || "")) {
           accountLabel.textContent = data.lastKnownLoggedIn ? signedInLabel(data) : "Restoring session…";
         }
       }
@@ -941,17 +1610,22 @@ async function refreshAccount() {
       panel.hidden = true;
       stopLoginPoll();
     }
+    renderSessionDiag(data);
     wireBookmarklets().catch(() => {});
     return data;
   } catch (error) {
     const missing = /unknown api route/i.test(error.message || "");
     if (missing) {
-      accountLabel.textContent = "Server not updated";
-      searchStatus.textContent =
-        "The website loaded, but Docker is still running the old server.js. Overwrite Public/cinarip/server.js from this PC, then run: sudo docker restart cinarip";
+      if (accountLabel) accountLabel.textContent = "Server not updated";
+      setAccountError(
+        noteError(
+          "The website loaded, but Docker is still running the old server.js. Overwrite Public/cinarip/server.js from this PC, then run: sudo docker restart cinarip"
+        )
+      );
     } else {
-      setAccountError(error.message || "Could not reach the NAS session check.");
+      setAccountError(noteError(error.message || "Could not reach the NAS session check."));
     }
+    renderSessionDiag(null);
     return null;
   }
 }
@@ -959,9 +1633,12 @@ async function refreshAccount() {
 async function refreshLibrary() {
   const [health, lib] = await Promise.all([getJson("/api/health"), getJson("/api/library")]);
   library = lib;
-  statusEl.textContent = health.videoRootExists
-    ? `Online · ${health.memoryMb} MB RAM`
-    : "Videos folder is not mounted";
+  renderHealthDiag(health);
+  if (health.videoRootExists) {
+    if (statusEl?.dataset.kind === "health") hideStatus();
+  } else {
+    showStatus("Videos folder is not mounted", { error: true, kind: "health" });
+  }
 
   const frozenCount = (lib.frozen?.movieCount || 0) + (lib.frozen?.showCount || 0);
   summaryEl.textContent = lib.exists
@@ -981,31 +1658,31 @@ async function refreshLibrary() {
   route();
 }
 
-filterInput.addEventListener("input", renderLibrary);
-if (freezerFilter) freezerFilter.addEventListener("input", renderFreezerPage);
+filterInput.addEventListener("input", () => renderLibrary({ skipMotion: true }));
+if (freezerFilter) freezerFilter.addEventListener("input", () => renderFreezerPage({ skipMotion: true }));
 
 async function runFreezerAction(action, id) {
   if (!id) return;
   try {
-    statusEl.textContent = action === "thaw" ? "Thawing…" : "Moving to Freezer…";
+    showStatus(action === "thaw" ? "Thawing…" : "Moving to Freezer…");
     const result = await postJson(`/api/library/${action}`, { id });
-    statusEl.textContent = result.message || (action === "thaw" ? "Thawed" : "Moved to Freezer");
+    showStatus(result.message || (action === "thaw" ? "Thawed" : "Moved to Freezer"));
     if (showIdFromHash()) closeShow();
     await refreshLibrary();
   } catch (error) {
-    statusEl.textContent = error.message || "Freezer action failed";
+    showStatus(noteError(error.message || "Freezer action failed"), { error: true });
   }
 }
 
 async function runFreezerOriginal(kind, id) {
   if (!id) return;
   try {
-    statusEl.textContent = kind === "restore" ? "Restoring original…" : "Discarding original…";
+    showStatus(kind === "restore" ? "Restoring original…" : "Discarding original…");
     const result = await postJson(`/api/freezer/${kind === "restore" ? "restore-original" : "discard-original"}`, { id });
-    statusEl.textContent = result.message || (kind === "restore" ? "Restored original" : "Original discarded");
+    showStatus(result.message || (kind === "restore" ? "Restored original" : "Original discarded"));
     await refreshLibrary();
   } catch (error) {
-    statusEl.textContent = error.message || "Freezer action failed";
+    showStatus(noteError(error.message || "Freezer action failed"), { error: true });
   }
 }
 
@@ -1013,12 +1690,14 @@ libraryList.addEventListener("click", (event) => {
   const freezeButton = event.target.closest("[data-freeze]");
   if (freezeButton) {
     event.preventDefault();
+    event.stopPropagation();
     runFreezerAction("freeze", freezeButton.dataset.freeze);
     return;
   }
   const thawButton = event.target.closest("[data-thaw]");
   if (thawButton) {
     event.preventDefault();
+    event.stopPropagation();
     runFreezerAction("thaw", thawButton.dataset.thaw);
     return;
   }
@@ -1048,6 +1727,7 @@ if (freezerList) {
     const thawButton = event.target.closest("[data-thaw]");
     if (thawButton) {
       event.preventDefault();
+      event.stopPropagation();
       runFreezerAction("thaw", thawButton.dataset.thaw);
       return;
     }
@@ -1062,7 +1742,9 @@ if (freezerList) {
 }
 
 if (showFreezerAction) {
-  showFreezerAction.addEventListener("click", () => {
+  showFreezerAction.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
     if (showFreezerAction.dataset.thaw) {
       runFreezerAction("thaw", showFreezerAction.dataset.thaw);
       return;
@@ -1098,7 +1780,7 @@ document.getElementById("catalog-queue-all").addEventListener("click", async () 
     searchStatus.textContent = `Added ${added} movie${added === 1 ? "" : "s"} to queue`;
     await refreshJobs();
   } catch (error) {
-    searchStatus.textContent = error.message || "Could not queue movies.";
+    searchStatus.textContent = noteError(error.message || "Could not queue movies.");
   }
 });
 
@@ -1124,10 +1806,10 @@ catalogTvEpisodeSelect.addEventListener("change", () => {
 startDownloadQueueButton.addEventListener("click", async () => {
   try {
     const result = await postJson("/api/downloads/start");
-    if (!result.ok) searchStatus.textContent = result.error || "Could not start the queue.";
+    if (!result.ok) searchStatus.textContent = noteError(result.error || "Could not start the queue.");
     await refreshJobs();
   } catch (error) {
-    searchStatus.textContent = error.message || "Could not start the queue.";
+    searchStatus.textContent = noteError(error.message || "Could not start the queue.");
   }
 });
 
@@ -1136,7 +1818,7 @@ stopDownloadQueueButton.addEventListener("click", async () => {
     await postJson("/api/downloads/stop");
     await refreshJobs();
   } catch (error) {
-    searchStatus.textContent = error.message || "Could not stop the queue.";
+    searchStatus.textContent = noteError(error.message || "Could not stop the queue.");
   }
 });
 
@@ -1145,7 +1827,7 @@ clearDownloadQueueButton.addEventListener("click", async () => {
     await postJson("/api/downloads/clear");
     await refreshJobs();
   } catch (error) {
-    searchStatus.textContent = error.message || "Could not clear the queue.";
+    searchStatus.textContent = noteError(error.message || "Could not clear the queue.");
   }
 });
 
@@ -1154,7 +1836,9 @@ document.getElementById("search-form").addEventListener("submit", async (event) 
   const query = document.getElementById("search-q").value.trim();
   if (!query) return;
   searchStatus.textContent = "Searching Tornado…";
+  stopTileFloatIn(searchList);
   searchList.innerHTML = "";
+  motionSig["search:html"] = "";
   selectedCatalogMovie = null;
   showCatalogResults();
   try {
@@ -1168,7 +1852,7 @@ document.getElementById("search-form").addEventListener("submit", async (event) 
       : "No titles found.";
     renderSearch();
   } catch (error) {
-    searchStatus.textContent = error.message || "Search failed.";
+    searchStatus.textContent = noteError(error.message || "Search failed.");
   }
 });
 
@@ -1188,7 +1872,34 @@ document.getElementById("cookie-form").addEventListener("submit", async (event) 
     document.getElementById("tornado-cookie").value = "";
     await refreshAccount();
   } catch (error) {
-    accountLabel.textContent = error.message || "Cookie save failed";
+    if (accountLabel) accountLabel.textContent = noteError(error.message || "Cookie save failed");
+  }
+});
+
+document.getElementById("refresh-session")?.addEventListener("click", async () => {
+  try {
+    await refreshSettingsDiagnostics();
+  } catch (error) {
+    setAccountError(noteError(error.message || "Could not refresh diagnostics."));
+  }
+});
+
+document.getElementById("copy-status-json")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const payload = {
+    session: lastTornadoStatus,
+    health: lastHealth
+  };
+  const text = JSON.stringify(payload, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    const previous = button?.textContent;
+    if (button) button.textContent = "Copied";
+    window.setTimeout(() => {
+      if (button && previous) button.textContent = previous;
+    }, 1400);
+  } catch (error) {
+    setAccountError(noteError(error.message || "Could not copy status JSON."));
   }
 });
 
@@ -1208,11 +1919,119 @@ window.addEventListener("message", (event) => {
   }
 });
 
+function bootUiMotion() {
+  const header = document.querySelector(".top");
+  const view = document.querySelector(".view:not([hidden])");
+  const skip = new Set(["library-list", "freezer-list", "search-list", "episode-list"]);
+  const kids = view ? [...view.children].filter((el) => !skip.has(el.id)) : [];
+  if (!canMotion()) {
+    markMotionReady();
+    shellMotionDone = true;
+    return;
+  }
+  if (header) window.anime.set(header, { opacity: 0, translateY: 10 });
+  if (kids.length) window.anime.set(kids, { opacity: 0, translateY: 16 });
+  markMotionReady();
+  motionFade(header, { fromY: 10, duration: 460 });
+  motionFade(kids, { fromY: 16, duration: 440, delay: (_, i) => 90 + i * 70 });
+  shellMotionDone = true;
+}
+
+function wireMotionPress() {
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (!canMotion()) return;
+      const hit = event.target.closest("button, .tab, a.ghost");
+      if (!hit || hit.closest("video")) return;
+      if (hit.closest(".library-card, .catalog-card")) return;
+      window.anime.remove(hit);
+      window.anime({
+        targets: hit,
+        scale: [0.95, 1],
+        duration: 180,
+        easing: "easeOutQuad",
+        complete() {
+          hit.style.removeProperty("transform");
+        }
+      });
+    },
+    true
+  );
+}
+
+function hideSplashOverlay() {
+  if (!splashEl) return;
+  splashEl.hidden = true;
+  splashEl.setAttribute("aria-hidden", "true");
+  splashEl.setAttribute("aria-busy", "false");
+  splashEl.style.pointerEvents = "none";
+}
+
+function dismissSplash() {
+  if (splashDismissed) return;
+  splashDismissed = true;
+  if (!splashEl || splashEl.hidden) return;
+  splashEl.style.pointerEvents = "none";
+  splashEl.setAttribute("aria-busy", "false");
+  if (!canMotion()) {
+    hideSplashOverlay();
+    startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
+    return;
+  }
+  const safety = window.setTimeout(() => {
+    hideSplashOverlay();
+    startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
+  }, 520);
+  window.anime({
+    targets: splashEl,
+    opacity: 0,
+    scale: 1.06,
+    duration: 420,
+    easing: "easeInCubic",
+    complete() {
+      window.clearTimeout(safety);
+      hideSplashOverlay();
+      startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
+    }
+  });
+}
+
+function showSplashReady() {
+  if (!splashEl || splashDismissed || splashEl.hidden) return;
+  splashEl.setAttribute("aria-busy", "false");
+  if (splashLabelEl) splashLabelEl.hidden = true;
+  if (!splashReadyBtn) return;
+  splashReadyBtn.hidden = false;
+  splashReadyBtn.focus();
+}
+
+async function bootLibrarySplash() {
+  const started = performance.now();
+  try {
+    await refreshLibrary();
+  } catch (error) {
+    showStatus(noteError(error.message || "Could not reach the NAS library."), { error: true, kind: "health" });
+  }
+  const remain = Math.max(0, SPLASH_MIN_MS - (performance.now() - started));
+  if (remain) await new Promise((resolve) => window.setTimeout(resolve, remain));
+  showSplashReady();
+}
+
+if (splashReadyBtn) {
+  splashReadyBtn.addEventListener("click", () => {
+    dismissSplash();
+  });
+}
+
 wireBookmarklets().catch(() => {});
 restoreAccountLabel();
-refreshLibrary().catch((error) => {
-  statusEl.textContent = error.message || "Could not reach the NAS library.";
-});
+if (!showIdFromHash()) route();
+else if (filterInput) filterInput.hidden = true;
+bootUiMotion();
+wireMotionPress();
+wireTileMotion();
+bootLibrarySplash();
 refreshAccount()
   .then(() => finishCaptchaLogin(recaptchaFromHash()))
   .catch(() => {});
