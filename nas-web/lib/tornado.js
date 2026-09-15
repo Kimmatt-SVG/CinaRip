@@ -465,15 +465,30 @@ function isTornadoHostName(host) {
   return /tornado/i.test(String(host || ""));
 }
 
+function tornadoIpMode() {
+  const mode = String(process.env.TORNADO_IP || "4").trim().toLowerCase();
+  if (mode === "6" || mode === "ipv6") return "6";
+  if (mode === "auto") return "auto";
+  return "4";
+}
+
+function tornadoIpFlag() {
+  return tornadoIpMode() === "6" ? "-6" : "-4";
+}
+
 function shouldForceIpv4(url) {
   const host = hostnameOf(url);
-  if (!host) return true;
   if (isLoadshareHostName(host) || /ip6/i.test(host)) return false;
+  if (tornadoIpMode() === "6" || tornadoIpMode() === "auto") return false;
+  if (!host) return true;
   return true;
 }
 
 function prefersIpv6(url) {
-  return /ip6/i.test(hostnameOf(url));
+  const host = hostnameOf(url);
+  if (/ip6/i.test(host)) return true;
+  if (tornadoIpMode() === "6" && isTornadoHostName(host)) return true;
+  return false;
 }
 
 function collectLoadshareHosts(text, bucket) {
@@ -791,7 +806,7 @@ class TornadoClient {
     );
     const tornado = await runCurlOnce(
       bin,
-      [...chrome131Args(), "-4", "-sS", "-I", "--max-time", "20", `${BASE_URL}/tornado-1`],
+      [...chrome131Args(), tornadoIpFlag(), "-sS", "-I", "--max-time", "20", `${BASE_URL}/tornado-1`],
       20000
     );
     return { ok: tornado.ok, bin, google, tornado };

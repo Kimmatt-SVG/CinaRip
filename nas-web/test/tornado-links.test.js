@@ -117,6 +117,19 @@ describe("LoadShare IP family", () => {
     assert.equal(prefersIpv6("https://vip-1-1-ip6.loadshare.org/download/x"), true);
     assert.equal(prefersIpv6("https://loadshare.org/download/x"), false);
   });
+
+  it("uses IPv6 for Tornado when TORNADO_IP=6", () => {
+    const prev = process.env.TORNADO_IP;
+    process.env.TORNADO_IP = "6";
+    try {
+      assert.equal(shouldForceIpv4("https://www4.tornadomovies.co/getdownload/abc/true"), false);
+      assert.equal(prefersIpv6("https://www4.tornadomovies.co/tornado-1"), true);
+      assert.equal(shouldForceIpv4("https://loadshare.org/download/x"), false);
+    } finally {
+      if (prev == null) delete process.env.TORNADO_IP;
+      else process.env.TORNADO_IP = prev;
+    }
+  });
 });
 
 describe("LoadShare forms and host diagnostics", () => {
