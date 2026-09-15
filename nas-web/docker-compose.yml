@@ -1,0 +1,29 @@
+# CinaRip NAS library + Tornado HTTP downloader for ASUSTOR AS1102T.
+# Host networking: Docker bridge on this NAS cannot reach Tornado (TCP timeout).
+# Open at https://cinarip.matthewsuess.com (reverse proxy). Local bind is still :8787.
+services:
+  cinarip:
+    build: .
+    image: cinarip-nas:arm64
+    container_name: cinarip
+    platform: linux/arm64
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 256m
+    memswap_limit: 256m
+    environment:
+      PORT: "8787"
+      VIDEO_ROOT: /data/videos
+      DATA_ROOT: /data/app
+      CURL_IMPERSONATE_BIN: /opt/curl-impersonate/curl-impersonate
+    volumes:
+      - /share/Public/Videos:/data/videos:rw
+      - ./server.js:/app/server.js:ro
+      - ./public:/app/public:ro
+      # Host copy is optional. Do not mount this over /opt/curl-impersonate —
+      # an empty curl-bin hid the image's Chrome TLS binary and broke Tornado.
+      - ./curl-bin:/opt/curl-impersonate-host:ro
+      - cinarip-data:/data/app
+
+volumes:
+  cinarip-data:

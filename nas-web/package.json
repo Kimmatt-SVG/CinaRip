@@ -1,0 +1,8 @@
+{
+  "name": "cinarip-nas-web",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "bundle": "node bundle-server.js"
+  }
+}
