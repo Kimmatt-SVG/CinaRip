@@ -16,6 +16,10 @@ services:
       VIDEO_ROOT: /data/videos
       DATA_ROOT: /data/app
       CURL_IMPERSONATE_BIN: /opt/curl-impersonate/curl-impersonate
+      APP_PIN: ${APP_PIN:-}
+      CINARIP_PIN: ${CINARIP_PIN:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      SESSION_TTL_MINUTES: ${SESSION_TTL_MINUTES:-30}
     volumes:
       - /share/Public/Videos:/data/videos:rw
       - ./server.js:/app/server.js:ro

@@ -8,8 +8,9 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=71" />
-    <link rel="preload" href="/sounds/abyssal-starry-sky-slowed.mp3?v=4" as="audio" type="audio/mpeg" />
+    <link rel="stylesheet" href="/vendor/ysrtv/tv.css" />
+    <link rel="stylesheet" href="/styles.css?v=82" />
+    <link rel="preload" href="/sounds/abyssal-starry-sky-slowed.mp3?v=5" as="audio" type="audio/mpeg" />
     <script>
       document.documentElement.classList.toggle(
         "motion-on",
@@ -18,12 +19,15 @@
     </script>
   </head>
   <body>
-    <audio id="bgm" src="/sounds/abyssal-starry-sky-slowed.mp3?v=4" preload="auto" loop playsinline hidden></audio>
+    <audio id="bgm" src="/sounds/abyssal-starry-sky-slowed.mp3?v=5" preload="auto" loop playsinline hidden></audio>
+    <audio id="rite-bgm" preload="auto" playsinline hidden></audio>
+    <audio id="rite-bed" preload="auto" loop playsinline hidden></audio>
     <div class="ambient" aria-hidden="true">
       <video
         id="ambient-video"
         class="ambient-video"
-        src="/media/plasma-stream.mp4?v=2"
+        src="/media/plasma-stream.mp4?v=3"
+        poster="/media/plasma-stream.png"
         autoplay
         muted
         loop
@@ -36,14 +40,24 @@
       <div class="splash-inner">
         <img class="splash-logo" src="/logo.png" width="509" height="160" alt="CinaRip" />
         <p id="splash-label" class="splash-label">Loading library…</p>
+        <form id="splash-pin-form" class="splash-pin-form" hidden>
+          <label class="splash-pin-label" for="splash-pin">Enter PIN</label>
+          <input id="splash-pin" class="splash-pin-input" type="password" inputmode="numeric" autocomplete="one-time-code" maxlength="32" placeholder="•••••" aria-label="Library PIN" />
+          <button type="submit" class="splash-ready splash-pin-go" aria-label="Ready to watch">
+            <img src="/icons/ready-to-watch.png?v=1" width="966" height="251" alt="" draggable="false">
+          </button>
+        </form>
         <button type="button" id="splash-ready" class="splash-ready" hidden aria-label="Ready to watch">
           <img src="/icons/ready-to-watch.png?v=1" width="966" height="251" alt="" draggable="false">
         </button>
+        <p id="splash-auth-error" class="splash-auth-error" hidden></p>
       </div>
     </div>
     <header class="top">
       <div class="brand">
-        <img class="brand-logo" src="/logo.png" width="509" height="160" alt="CinaRip" />
+        <div class="brand-glitch" id="brand-glitch">
+          <img class="brand-logo" src="/logo.png" width="509" height="160" alt="CinaRip" />
+        </div>
       </div>
       <input id="filter" class="header-filter" type="search" placeholder="Filter titles" autocomplete="off" aria-label="Filter titles" />
       <div class="top-actions">
@@ -188,6 +202,16 @@
     </main>
 
     <main id="view-settings" class="view" hidden>
+      <section class="meter-card" id="site-auth-card">
+        <div class="meter-head">
+          <span>Library lock</span>
+          <span id="site-auth-label">PIN</span>
+        </div>
+        <p class="muted" id="site-auth-email">Unlock uses the shared APP_PIN. The library re-locks after 30 minutes.</p>
+        <form id="site-logout-form" class="login-form" method="post" action="/api/auth/logout">
+          <button type="submit" class="ghost">Lock</button>
+        </form>
+      </section>
       <section class="meter-card" id="account-card">
         <div class="meter-head">
           <span>Tornado account</span>
@@ -232,6 +256,9 @@
         </div>
         <dl class="diag-list" id="health-diag"></dl>
       </section>
+      <p class="punished-slot">
+        <button type="button" id="punished-gate" class="punished-gate" aria-label="Cinarip" aria-pressed="false">C̷I̷N̷A̷R̷I̷P̷</button>
+      </p>
     </main>
 
     <main id="view-show" class="view" hidden>
@@ -262,8 +289,18 @@
     </dialog>
 
     <p id="status" class="status-banner" hidden role="status"></p>
+    <div id="punished-veil" class="punished-veil" hidden aria-hidden="true">
+      <p id="punished-copy" class="punished-copy">Piracy is a crime... you will be punished</p>
+    </div>
+    <div id="rite-fx" class="rite-fx ysrtv-crt ysrtv-lines-3" hidden aria-hidden="true">
+      <div class="rite-grain" aria-hidden="true"></div>
+      <div class="rite-roll" aria-hidden="true"></div>
+    </div>
     <script src="/vendor/anime.min.js"></script>
-    <script src="/sounds.js?v=23"></script>
-    <script src="/app.js?v=47"></script>
+    <script src="/vendor/powerglitch.min.js"></script>
+    <script src="/sounds.js?v=28"></script>
+    <script src="/punished.js?v=12"></script>
+    <script src="/app.js?v=51"></script>
+    <script src="/pin-splash.js?v=3"></script>
   </body>
 </html>

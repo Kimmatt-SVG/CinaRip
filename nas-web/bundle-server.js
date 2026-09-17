@@ -17,7 +17,7 @@ function stripModule(source) {
     /const \{ pipeline \} = require\("stream\/promises"\);\r?\n/,
     /const path = require\("path"\);\r?\n/,
     /const \{ spawn \} = require\("child_process"\);\r?\n/,
-    /const \{[\s\S]*?\} = require\("\.\/(?:content-url|search-parse|tv-show-parse|download-queue|download-paths|queue-store|chrome-tls|tornado-session|tornado|http-download|artwork|freezer|freezer-worker-pack)"\);\r?\n/g
+    /const \{[\s\S]*?\} = require\("\.\/(?:content-url|search-parse|tv-show-parse|download-queue|download-paths|queue-store|chrome-tls|tornado-session|tornado|http-download|artwork|freezer|freezer-worker-pack|pin-auth)"\);\r?\n/g
   ];
   for (const pattern of drop) text = text.replace(pattern, "");
   text = text.replace(/\r?\nmodule\.exports = \{[\s\S]*?\};\s*$/, "\n");
@@ -50,6 +50,7 @@ const artwork = stripModule(fs.readFileSync(path.join(root, "lib", "artwork.js")
 const freezer = stripModule(fs.readFileSync(path.join(root, "lib", "freezer.js"), "utf8"));
 const freezerWorkerPack = stripModule(fs.readFileSync(path.join(root, "lib", "freezer-worker-pack.js"), "utf8"));
 const downloads = stripModule(fs.readFileSync(path.join(root, "lib", "downloads.js"), "utf8"));
+const pinAuth = stripModule(fs.readFileSync(path.join(root, "lib", "pin-auth.js"), "utf8"));
 
 function workerPackJson() {
   const dir = path.join(root, "..", "freezer-worker");
@@ -105,6 +106,7 @@ globalThis.CINARIP_FREEZER_WORKER_FILES = ${JSON.stringify(workerPackJson())};
 ${iife("toPosixRel, isFrozenRel, isOriginalVideoName, isTempEncodeName, classifyLibraryRel, classifyLibraryRels, freezerMovieDest, thawMovieDest, freezerShowDest, thawShowDest, freezerDestForRel, thawDestForRel, sidecarPathsForVideo, movePath, moveVideoWithSidecars, compressInfoForVideo, compressInfoForRels, freezeMovie, thawMovie, freezeShow, thawShow, restoreOriginal, discardOriginal, writableNasError", freezer)}
 ${iife("buildWorkerZip, getWorkerFiles", freezerWorkerPack)}
 ${iife("DownloadRunner", downloads)}
+${iife("SESSION_COOKIE_NAME, DEFAULT_SESSION_TTL_SEC, loadDotEnv, parseEnv, logAuthStartup, publicAuthConfig, publicSessionJson, cookieHeader, appendSetCookie, sessionFromRequest, buildSessionCookie, isPublicPath, wantsHtml, loginRedirectLocation, verifyPinAttempt, clearAuthCookies", pinAuth)}
 `;
 
 fs.writeFileSync(path.join(root, "server.js"), `${prelude}\n${rest}`);

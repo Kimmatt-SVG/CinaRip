@@ -110,7 +110,26 @@ const splashEl = document.getElementById("splash");
 const splashLabelEl = document.getElementById("splash-label");
 const splashReadyBtn = document.getElementById("splash-ready");
 const SPLASH_MIN_MS = 750;
+const SPLASH_SESSION_KEY = "cinarip.splash.dismissed";
 let splashDismissed = false;
+let siteAuth = { loggedIn: false, configured: false };
+
+function splashDismissedThisSession() {
+  try {
+    return sessionStorage.getItem(SPLASH_SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberSplashDismissed() {
+  splashDismissed = true;
+  try {
+    sessionStorage.setItem(SPLASH_SESSION_KEY, "1");
+  } catch {
+    // ignore quota / private mode
+  }
+}
 
 function canMotion() {
   return typeof window.anime === "function" && !reduceMotionMq.matches;
@@ -508,9 +527,17 @@ function noteError(message) {
   return message || "Something went wrong.";
 }
 
+function redirectToLoginIfUnauthorized(url, status) {
+  if (status !== 401) return;
+  if (String(url || "").includes("/api/auth/")) return;
+  if (splashEl && !splashDismissed && !splashEl.hidden) return;
+  location.assign("/");
+}
+
 async function getJson(url) {
   const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
+  redirectToLoginIfUnauthorized(url, res.status);
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
@@ -522,6 +549,7 @@ async function postJson(url, body) {
     body: JSON.stringify(body || {})
   });
   const data = await res.json().catch(() => ({}));
+  redirectToLoginIfUnauthorized(url, res.status);
   if (!res.ok) {
     const error = new Error(data.error || res.statusText);
     error.payload = data;
@@ -1741,10 +1769,22 @@ function renderHealthDiag(health) {
   ]);
 }
 
+async function refreshSiteAuth() {
+  const label = document.getElementById("site-auth-label");
+  try {
+    const data = await getJson("/api/auth/session");
+    siteAuth.loggedIn = Boolean(data?.loggedIn);
+    if (label) label.textContent = siteAuth.loggedIn ? "Unlocked" : "Locked";
+  } catch {
+    if (label) label.textContent = "Unknown";
+  }
+}
+
 async function refreshSettingsDiagnostics() {
   const [session, health] = await Promise.all([
     refreshAccount(),
-    getJson("/api/health").catch(() => null)
+    getJson("/api/health").catch(() => null),
+    refreshSiteAuth()
   ]);
   if (health) renderHealthDiag(health);
   else if (!lastHealth) renderHealthDiag(null);
@@ -2166,15 +2206,22 @@ function wireMotionPress() {
 
 function hideSplashOverlay() {
   if (!splashEl) return;
+  if (typeof window.anime === "function") window.anime.remove(splashEl);
   splashEl.hidden = true;
   splashEl.setAttribute("aria-hidden", "true");
   splashEl.setAttribute("aria-busy", "false");
   splashEl.style.pointerEvents = "none";
+  splashEl.style.opacity = "0";
+}
+
+function suppressSplash() {
+  rememberSplashDismissed();
+  hideSplashOverlay();
 }
 
 function dismissSplash() {
   if (splashDismissed) return;
-  splashDismissed = true;
+  rememberSplashDismissed();
   if (!splashEl || splashEl.hidden) return;
   splashEl.style.pointerEvents = "none";
   splashEl.setAttribute("aria-busy", "false");
@@ -2190,7 +2237,6 @@ function dismissSplash() {
   window.anime({
     targets: splashEl,
     opacity: 0,
-    scale: 1.06,
     duration: 420,
     easing: "easeInCubic",
     complete() {
@@ -2211,16 +2257,31 @@ function showSplashReady() {
 }
 
 async function bootLibrarySplash() {
+  if (splashDismissedThisSession()) {
+    suppressSplash();
+  }
   const started = performance.now();
   try {
     await refreshLibrary();
   } catch (error) {
     showStatus(noteError(error.message || "Could not reach the NAS library."), { error: true, kind: "health" });
   }
+  if (splashDismissed) {
+    hideSplashOverlay();
+    return;
+  }
   const remain = Math.max(0, SPLASH_MIN_MS - (performance.now() - started));
   if (remain) await new Promise((resolve) => window.setTimeout(resolve, remain));
+  if (splashDismissed) {
+    hideSplashOverlay();
+    return;
+  }
   showSplashReady();
 }
+
+window.CinaRipSplash = {
+  suppress: suppressSplash
+};
 
 if (splashReadyBtn) {
   splashReadyBtn.addEventListener("click", () => {
@@ -2241,7 +2302,13 @@ refreshAccount()
   .catch(() => {});
 refreshJobs().catch(() => {});
 
+function pinSplashLocked() {
+  const form = document.getElementById("splash-pin-form");
+  return Boolean(form && !form.hidden);
+}
+
 setInterval(() => {
+  if (pinSplashLocked()) return;
   refreshJobs().catch(() => {});
   if (isFreezerHash()) refreshLibrary().catch(() => {});
 }, 2000);

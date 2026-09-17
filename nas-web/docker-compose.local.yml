@@ -1,11 +1,11 @@
-# Run CinaRip on this Windows/Linux PC without touching the NAS stack.
+# Run CinaRip on this laptop without touching the NAS stack.
 #   docker compose -f docker-compose.local.yml up --build
 #
 # Optional Videos folder:
-#   $env:CINARIP_VIDEOS="C:\Users\kimma\Videos"
+#   CINARIP_VIDEOS=/path/to/videos docker compose -f docker-compose.local.yml up --build
 #
-# Tornado on this network is IPv6-only (IPv4 returns Cloudflare/nginx 404).
-# TORNADO_IP=6 and an IPv6 Docker network are required on Windows Docker Desktop.
+# Tornado prefers IPv6. This Wi-Fi often has none, and IPv4 TLS is reset.
+# TORNADO_IP=auto tries IPv6 then IPv4. Enable IPv6 or 1.1.1.1 / WARP for a live session.
 services:
   cinarip-local:
     build:
@@ -21,12 +21,16 @@ services:
       VIDEO_ROOT: /data/videos
       DATA_ROOT: /data/app
       CURL_IMPERSONATE_BIN: /opt/curl-impersonate/curl-impersonate
-      TORNADO_IP: "6"
+      TORNADO_IP: "auto"
+      APP_PIN: ${APP_PIN:-}
+      CINARIP_PIN: ${CINARIP_PIN:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      SESSION_TTL_MINUTES: ${SESSION_TTL_MINUTES:-30}
     volumes:
       - ${CINARIP_VIDEOS:-./videos}:/data/videos:rw
       - ./server.js:/app/server.js:ro
       - ./public:/app/public:ro
-      - cinarip-local-data:/data/app
+      - ./data:/data/app:rw
 
 networks:
   default:
@@ -36,6 +40,3 @@ networks:
       config:
         - subnet: 172.28.10.0/24
         - subnet: fd00:c10a:1::/64
-
-volumes:
-  cinarip-local-data:

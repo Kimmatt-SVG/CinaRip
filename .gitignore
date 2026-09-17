@@ -42,14 +42,14 @@ downloads/
 captures/
 recordings/
 output/
+nas-web/videos/
+nas-web/data/
 *.m3u8
 *.ts
 *.m4s
-*.mp4
 *.mkv
 *.mov
 *.aac
-*.mp3
 *.wav
 
 # CinaRip Library UI ambient video and sound
@@ -57,7 +57,12 @@ output/
 !nas-web/public/media/**
 !nas-web/public/sounds/
 !nas-web/public/sounds/**
+!nas-web/public/rite/
+!nas-web/public/rite/**
 
 # Local Chrome TLS binaries (downloaded on the laptop, not for the NAS image)
 nas-web/curl-bin/*
 !nas-web/curl-bin/.gitkeep
+
+# Local PIN / session secrets
+nas-web/.env
