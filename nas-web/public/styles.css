@@ -91,13 +91,20 @@ html.is-rite-running body > #splash.splash {
   pointer-events: none !important;
 }
 
-.splash-inner,
+.splash-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+  transform-origin: center center;
+}
+
 .splash-logo,
 .splash-label,
 button.splash-ready,
 button.splash-ready img {
   animation: none !important;
-  transform: none !important;
   filter: none !important;
 }
 
@@ -107,15 +114,6 @@ html.is-punished #splash .splash-ready,
 html.is-punished #splash .splash-ready img {
   animation: none !important;
   filter: none !important;
-  transform: none !important;
-}
-
-.splash-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-  text-align: center;
 }
 
 .splash-logo {
@@ -206,16 +204,21 @@ button.splash-ready img {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text);
   font: 700 22px/1.2 var(--font);
-  letter-spacing: 0.42em;
+  letter-spacing: 0;
   text-align: center;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
   backdrop-filter: blur(18px) saturate(1.2);
   -webkit-backdrop-filter: blur(18px) saturate(1.2);
 }
 
+.splash-pin-input.has-value {
+  letter-spacing: 0.42em;
+  -webkit-text-security: disc;
+}
+
 .splash-pin-input::placeholder {
   color: var(--faint);
-  letter-spacing: 0.42em;
+  letter-spacing: 0;
 }
 
 .splash-pin-input:focus {
@@ -802,6 +805,7 @@ html.motion-on .plasma-meter.is-running .plasma-meter-sheen {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
   gap: 12px;
+  overflow: visible;
 }
 
 .library-card {
@@ -809,12 +813,45 @@ html.motion-on .plasma-meter.is-running .plasma-meter-sheen {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  position: relative;
+  overflow: visible;
+}
+
+.library-card::before,
+.catalog-card::before {
+  content: "";
+  position: absolute;
+  left: -28%;
+  right: -28%;
+  top: -12%;
+  height: 90%;
+  z-index: 0;
+  border-radius: 40px;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 70% 64% at 50% 46%, rgba(120, 198, 255, 0.95), rgba(10, 132, 255, 0.42) 44%, rgba(10, 132, 255, 0) 72%);
+  filter: blur(22px);
+  mix-blend-mode: screen;
+  opacity: 0;
+  transform: scale(0.88);
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+.library-card:has(.tile-scene:hover)::before,
+.library-card:has(.is-tilting)::before,
+.library-card:has(.poster:focus-visible)::before,
+.catalog-card:has(.tile-scene:hover)::before,
+.catalog-card:has(.is-tilting)::before,
+.catalog-card:has(.catalog-card-poster:focus-visible)::before {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .tile-scene {
   width: 100%;
   position: relative;
-  z-index: 0;
+  z-index: 1;
+  overflow: visible;
   perspective: 800px;
   perspective-origin: 50% 42%;
   transform-style: preserve-3d;
@@ -827,6 +864,8 @@ html.motion-on .plasma-meter.is-running .plasma-meter-sheen {
 .tile-float-wrap {
   width: 100%;
   position: relative;
+  z-index: 1;
+  overflow: visible;
   transform-origin: 50% 50%;
   transform-style: preserve-3d;
 }
@@ -865,6 +904,147 @@ html.motion-on .plasma-meter.is-running .plasma-meter-sheen {
 .freezer-corner:hover img,
 .freezer-corner:focus-visible img {
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.85)) brightness(1.12);
+}
+
+.poster-delete {
+  display: none;
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  z-index: 6;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(48, 48, 52, 0.94);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 4px 10px rgba(0, 0, 0, 0.45);
+  transform: translateZ(28px);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.poster-delete span {
+  display: block;
+  margin-top: -1px;
+  pointer-events: none;
+}
+
+html.is-jiggling .poster-delete {
+  display: inline-flex;
+}
+
+html.is-jiggling .freezer-corner {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+html.is-jiggling .library-card .poster {
+  cursor: default;
+}
+
+.library-card .poster {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+
+.library-card {
+  touch-action: manipulation;
+}
+
+html.is-jiggling .library-card.is-deleting .tile-float-wrap {
+  animation: none !important;
+}
+
+@property --jiggle-amp {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+@property --jiggle-t {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
+html {
+  --jiggle-amp: 0;
+}
+
+@keyframes cinarip-jiggle {
+  0% { --jiggle-t: -1; }
+  50% { --jiggle-t: 1; }
+  100% { --jiggle-t: -1; }
+}
+
+html.motion-on.is-jiggling .library-card .tile-float-wrap.tile-float,
+html.motion-on.is-jiggle-settling .library-card .tile-float-wrap.tile-float {
+  animation: cinarip-jiggle var(--jiggle-dur, 0.32s) ease-in-out infinite;
+  animation-delay: var(--jiggle-delay, 0s);
+  transform-origin: 50% 78%;
+  transform: rotate(calc(0.52deg * var(--jiggle-amp, 0) * var(--jiggle-t, 0)));
+}
+
+html.is-punished.motion-on.is-jiggling .library-card .tile-float-wrap.tile-float,
+html.is-punished.motion-on.is-jiggle-settling .library-card .tile-float-wrap.tile-float {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.motion-on.is-jiggling .library-card .tile-float-wrap.tile-float,
+  html.motion-on.is-jiggle-settling .library-card .tile-float-wrap.tile-float {
+    animation: none;
+  }
+}
+
+body > #library-delete-veil.library-delete-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 24px;
+  background: rgba(6, 8, 16, 0.55);
+  backdrop-filter: blur(12px) saturate(1.18);
+  -webkit-backdrop-filter: blur(12px) saturate(1.18);
+}
+
+body > #library-delete-veil.library-delete-veil[hidden] {
+  display: none !important;
+}
+
+.library-delete-card {
+  width: min(420px, 100%);
+  padding: 22px 20px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--glass);
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.42);
+}
+
+.library-delete-card p {
+  margin: 0 0 16px;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.library-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .freezer-corner--thaw img {
@@ -1046,6 +1226,8 @@ html.motion-on .plasma-meter.is-running .plasma-meter-sheen {
   text-align: left;
   cursor: pointer;
   font: inherit;
+  position: relative;
+  overflow: visible;
 }
 
 .catalog-card-poster {
@@ -1486,9 +1668,14 @@ html.motion-on .tile-scene:has(.is-tilting) .tile-float-wrap.tile-float {
   animation-play-state: paused;
 }
 
+.tile-scene:hover .poster,
+.tile-scene:hover .catalog-card-poster,
 html.motion-on .poster.is-tilting,
 html.motion-on .catalog-card-poster.is-tilting {
-  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.45);
+  box-shadow:
+    0 16px 28px rgba(0, 0, 0, 0.28),
+    0 0 26px rgba(80, 176, 255, 0.4),
+    0 16px 38px rgba(10, 132, 255, 0.32);
 }
 
 @keyframes cinarip-tile-float-y {
@@ -1504,6 +1691,83 @@ html.motion-on .catalog-card-poster.is-tilting {
 @media (prefers-reduced-motion: reduce) {
   html.motion-on .tile-float-wrap.tile-float {
     animation: none;
+  }
+}
+
+@property --liquid-x-t {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
+@property --liquid-y {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --liquid-r {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+html.motion-on .liquid-idle {
+  --liquid-x-t: 0;
+  --liquid-y: 0px;
+  --liquid-r: 0deg;
+  --press-s: 1;
+  animation:
+    cinarip-liquid-y var(--liquid-dur, 4s) ease-in-out infinite alternate,
+    cinarip-liquid-x var(--liquid-x-dur, 6.8s) ease-in-out infinite alternate,
+    cinarip-liquid-r var(--liquid-r-dur, 9.2s) ease-in-out infinite alternate;
+  animation-delay:
+    var(--liquid-delay, 0s),
+    var(--liquid-x-delay, 0s),
+    var(--liquid-r-delay, 0s);
+  transform: translate3d(
+      calc(var(--liquid-x-amp, 2px) * var(--liquid-x-t)),
+      var(--liquid-y),
+      0
+    )
+    rotate(var(--liquid-r))
+    scale(var(--press-s, 1));
+}
+
+html.motion-on .liquid-idle .liquid-idle {
+  animation: none;
+  transform: none;
+}
+
+html.motion-on .liquid-idle:active {
+  animation-play-state: paused;
+}
+
+@media (hover: hover) {
+  html.motion-on .liquid-idle:is(:hover, :focus-visible, :focus-within) {
+    animation-play-state: paused;
+  }
+}
+
+@keyframes cinarip-liquid-y {
+  from { --liquid-y: 0px; }
+  to { --liquid-y: var(--liquid-y-amp, -3px); }
+}
+
+@keyframes cinarip-liquid-x {
+  from { --liquid-x-t: 0; }
+  to { --liquid-x-t: 1; }
+}
+
+@keyframes cinarip-liquid-r {
+  from { --liquid-r: 0deg; }
+  to { --liquid-r: var(--liquid-r-amp, 0.35deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.motion-on .liquid-idle {
+    animation: none;
+    transform: none;
   }
 }
 
@@ -1592,6 +1856,8 @@ body > #punished-veil.punished-veil[hidden] {
   letter-spacing: 0.04em;
   line-height: 1.35;
   text-align: center;
+  text-shadow: none;
+  filter: none;
   opacity: 0;
 }
 
@@ -1609,6 +1875,10 @@ html.is-punished {
 html.is-punished,
 html.is-punished body {
   background: #120303;
+}
+
+html.is-punished body > :not(.ambient):not(#rite-fx):not(#punished-veil) {
+  filter: brightness(0.58) contrast(1.22) saturate(0.72);
 }
 
 html.is-punished .ambient {
@@ -1645,6 +1915,18 @@ html.is-punished .plasma-meter.is-critical .plasma-meter-fill {
   box-shadow: 0 0 16px rgba(255, 42, 42, 0.45);
 }
 
+html.is-punished #storage-meter.is-cursed-overflow .plasma-meter-track,
+html.is-punished #job-meter.is-cursed-overflow .plasma-meter-track,
+html.is-punished #queue-meter.is-cursed-overflow .plasma-meter-track,
+html.is-punished .queue-item-meter.is-cursed-overflow {
+  overflow: visible;
+}
+
+html.is-punished .plasma-meter-fill,
+html.is-punished .queue-item-fill {
+  transition: none;
+}
+
 html.is-punished .ghost.primary-action {
   background: linear-gradient(90deg, #6a0000, #ff2a2a);
   box-shadow: 0 8px 22px rgba(255, 42, 42, 0.28);
@@ -1654,6 +1936,57 @@ html.is-punished .download-queue-section.is-running {
   box-shadow:
     0 0 0 1px rgba(255, 42, 42, 0.28),
     0 18px 42px rgba(120, 0, 0, 0.2);
+}
+
+html.is-punished .download-queue-list {
+  max-height: min(58vh, 560px);
+  overflow-y: auto;
+  gap: 22px;
+  padding: 6px 4px 10px;
+}
+
+html.is-punished .download-queue-item {
+  padding: 16px 36px 16px 14px;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+html.is-punished .download-queue-item.punished-scatter {
+  transform: none;
+}
+
+html.is-punished .download-queue-item-title,
+html.is-punished .download-queue-item-error {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+html.is-punished .download-queue-item.status-failed {
+  border-color: rgba(255, 70, 70, 0.32);
+}
+
+html.is-punished .download-queue-item.current {
+  background: linear-gradient(90deg, rgba(255, 42, 42, 0.2), rgba(80, 0, 0, 0.12));
+  border-color: rgba(255, 42, 42, 0.5);
+  box-shadow: 0 0 24px rgba(255, 42, 42, 0.18);
+}
+
+@keyframes punished-queue-breathe {
+  0%, 100% { box-shadow: 0 0 16px rgba(255, 42, 42, 0.14); }
+  50% { box-shadow: 0 0 28px rgba(255, 80, 70, 0.28); }
+}
+
+html.is-punished .queue-item-fill {
+  background: linear-gradient(90deg, #7a0000, #ff2a2a);
+  box-shadow: 0 0 10px rgba(255, 42, 42, 0.45);
+}
+
+html.is-punished .download-queue-item-error {
+  color: #ffc4be;
+  font-style: italic;
+  letter-spacing: 0.02em;
 }
 
 html.is-punished .catalog-card-kind,
@@ -1688,7 +2021,189 @@ html.is-punished .music-mute img[data-rite="1"] {
   object-fit: contain;
 }
 
+html.is-punished .tab-label,
+html.is-punished .music-mute .tab-label {
+  white-space: normal;
+  max-width: 6.2em;
+  text-align: center;
+}
+
+html.is-punished button.ghost,
+html.is-punished a.ghost,
+html.is-punished .splash-pin-label,
+html.is-punished .status-banner,
+html.is-punished .meter-head span {
+  white-space: normal;
+}
+
+html.is-punished .punished-scatter {
+  transform: translate3d(var(--p-dx, 0px), var(--p-dy, 0px), 0) rotate(var(--p-rot, 0deg));
+}
+
+html.is-punished body > #status.status-banner.punished-scatter {
+  transform: translateX(-50%) translate3d(var(--p-dx, 0px), var(--p-dy, 0px), 0) rotate(var(--p-rot, 0deg));
+}
+
 html.is-punished.motion-on .tile-float-wrap.tile-float {
+  animation: none;
+  transform: none;
+}
+
+html.is-punished.motion-on :is(
+  .brand-glitch,
+  #filter.header-filter,
+  .music-mute,
+  .tabs .tab,
+  .meter-card,
+  .search-form,
+  .login-form,
+  .catalog-results-head,
+  .catalog-detail-body,
+  .show-hero,
+  .freezer-section,
+  .library-card,
+  .catalog-card,
+  button.episode,
+  #freezer-filter,
+  button.ghost,
+  a.ghost,
+  .punished-gate,
+  .library-delete-card,
+  dialog
+),
+html.is-punished.motion-on .liquid-idle {
+  --p-jx: 1;
+  --p-jy: 1;
+  --p-jr: 1;
+  animation: punished-chrome-shake var(--punished-jitter-dur, 0.56s) ease-in-out infinite;
+  animation-delay: var(--punished-jitter-delay, 0s);
+}
+
+html.is-punished.motion-on body > #status.status-banner {
+  animation: punished-status-shake 0.64s ease-in-out infinite;
+  animation-delay: -0.18s;
+}
+
+html.is-punished.motion-on .brand-glitch {
+  --punished-jitter-dur: 0.52s;
+  --punished-jitter-delay: -0.11s;
+}
+
+html.is-punished.motion-on #filter.header-filter {
+  --punished-jitter-dur: 0.66s;
+  --punished-jitter-delay: -0.29s;
+  --p-jy: -1;
+  animation-name: punished-chrome-shake-b;
+}
+
+html.is-punished.motion-on .music-mute {
+  --punished-jitter-dur: 0.48s;
+  --punished-jitter-delay: -0.19s;
+  --p-jx: -1;
+}
+
+html.is-punished.motion-on .tabs .tab:nth-child(odd) {
+  --punished-jitter-dur: 0.5s;
+  --punished-jitter-delay: -0.08s;
+}
+
+html.is-punished.motion-on .tabs .tab:nth-child(even) {
+  --punished-jitter-dur: 0.64s;
+  --punished-jitter-delay: -0.31s;
+  --p-jy: -1;
+  animation-name: punished-chrome-shake-b;
+}
+
+html.is-punished.motion-on .punished-gate,
+html.is-punished.motion-on #freezer-filter {
+  --punished-jitter-dur: 0.58s;
+  --punished-jitter-delay: -0.22s;
+  --p-jr: -1;
+}
+
+html.is-punished.motion-on .search-form,
+html.is-punished.motion-on .show-hero,
+html.is-punished.motion-on .catalog-detail-body,
+html.is-punished.motion-on .library-delete-card,
+html.is-punished.motion-on dialog {
+  --punished-jitter-dur: 0.72s;
+  --punished-jitter-delay: -0.16s;
+  animation-name: punished-chrome-shake-b;
+}
+
+html.is-punished.motion-on .meter-card:nth-of-type(odd) {
+  --punished-jitter-dur: 0.6s;
+  --punished-jitter-delay: -0.14s;
+}
+
+html.is-punished.motion-on .meter-card:nth-of-type(even) {
+  --punished-jitter-dur: 0.74s;
+  --punished-jitter-delay: -0.36s;
+  --p-jx: -1;
+  animation-name: punished-chrome-shake-b;
+}
+
+html.is-punished.motion-on .library-card:nth-child(4n+1),
+html.is-punished.motion-on .catalog-card:nth-child(4n+1),
+html.is-punished.motion-on button.episode:nth-child(4n+1) {
+  --punished-jitter-dur: 0.5s;
+  --punished-jitter-delay: -0.07s;
+}
+
+html.is-punished.motion-on .library-card:nth-child(4n+2),
+html.is-punished.motion-on .catalog-card:nth-child(4n+2),
+html.is-punished.motion-on button.episode:nth-child(4n+2) {
+  --punished-jitter-dur: 0.62s;
+  --punished-jitter-delay: -0.27s;
+  --p-jx: -1;
+  --p-jy: -1;
+  animation-name: punished-chrome-shake-b;
+}
+
+html.is-punished.motion-on .library-card:nth-child(4n+3),
+html.is-punished.motion-on .catalog-card:nth-child(4n+3),
+html.is-punished.motion-on button.episode:nth-child(4n+3) {
+  --punished-jitter-dur: 0.56s;
+  --punished-jitter-delay: -0.18s;
+  --p-jr: -1;
+}
+
+html.is-punished.motion-on .library-card:nth-child(4n),
+html.is-punished.motion-on .catalog-card:nth-child(4n),
+html.is-punished.motion-on button.episode:nth-child(4n) {
+  --punished-jitter-dur: 0.7s;
+  --punished-jitter-delay: -0.34s;
+  --p-jx: -1;
+  animation-name: punished-chrome-shake-b;
+}
+
+html.is-punished.motion-on :is(
+  .meter-card,
+  .search-form,
+  .login-form,
+  .catalog-results-head,
+  .catalog-detail-body,
+  .show-hero,
+  .freezer-section,
+  .library-card,
+  .catalog-card,
+  .library-delete-card,
+  dialog
+) :is(
+  button.ghost,
+  a.ghost,
+  .login-form,
+  .search-form,
+  .empty,
+  .download-queue-item,
+  .download-queue-empty,
+  button.episode,
+  .liquid-idle
+) {
+  animation: none;
+}
+
+html.is-punished.motion-on .liquid-idle .liquid-idle {
   animation: none;
   transform: none;
 }
@@ -1698,20 +2213,42 @@ html.is-punished.motion-on .show-hero-poster,
 html.is-punished.motion-on .search-poster,
 html.is-punished.motion-on .library-card .poster,
 html.is-punished.motion-on .catalog-detail-poster {
-  animation: punished-shake 0.09s linear infinite;
+  animation: punished-shake 0.16s linear infinite;
   box-shadow:
     -3px 0 0 rgba(255, 20, 60, 0.42),
     3px 0 0 rgba(0, 220, 255, 0.28);
 }
 
+html.is-punished.motion-on .download-queue-item.current {
+  animation: punished-queue-breathe 2.8s ease-in-out infinite;
+}
+
+@keyframes punished-chrome-shake {
+  0%, 100% { transform: translate3d(var(--p-dx, 0px), var(--p-dy, 0px), 0) rotate(var(--p-rot, 0deg)); }
+  25% { transform: translate3d(calc(var(--p-dx, 0px) + var(--p-jx, 1) * -0.8px), calc(var(--p-dy, 0px) + var(--p-jy, 1) * 0.5px), 0) rotate(calc(var(--p-rot, 0deg) + var(--p-jr, 1) * -0.18deg)); }
+  50% { transform: translate3d(calc(var(--p-dx, 0px) + var(--p-jx, 1) * 0.9px), calc(var(--p-dy, 0px) + var(--p-jy, 1) * -0.55px), 0) rotate(calc(var(--p-rot, 0deg) + var(--p-jr, 1) * 0.16deg)); }
+  75% { transform: translate3d(calc(var(--p-dx, 0px) + var(--p-jx, 1) * -0.55px), calc(var(--p-dy, 0px) + var(--p-jy, 1) * 0.4px), 0) rotate(calc(var(--p-rot, 0deg) + var(--p-jr, 1) * -0.12deg)); }
+}
+
+@keyframes punished-chrome-shake-b {
+  0%, 100% { transform: translate3d(var(--p-dx, 0px), var(--p-dy, 0px), 0) rotate(var(--p-rot, 0deg)); }
+  30% { transform: translate3d(calc(var(--p-dx, 0px) + 0.7px), calc(var(--p-dy, 0px) - 0.45px), 0) rotate(calc(var(--p-rot, 0deg) + 0.14deg)); }
+  62% { transform: translate3d(calc(var(--p-dx, 0px) - 0.8px), calc(var(--p-dy, 0px) + 0.5px), 0) rotate(calc(var(--p-rot, 0deg) - 0.16deg)); }
+}
+
+@keyframes punished-status-shake {
+  0%, 100% { transform: translateX(-50%) translate3d(var(--p-dx, 0px), var(--p-dy, 0px), 0) rotate(var(--p-rot, 0deg)); }
+  35% { transform: translateX(-50%) translate3d(calc(var(--p-dx, 0px) - 0.7px), calc(var(--p-dy, 0px) + 0.4px), 0) rotate(calc(var(--p-rot, 0deg) - 0.12deg)); }
+  68% { transform: translateX(-50%) translate3d(calc(var(--p-dx, 0px) + 0.8px), calc(var(--p-dy, 0px) - 0.45px), 0) rotate(calc(var(--p-rot, 0deg) + 0.14deg)); }
+}
+
 @keyframes punished-shake {
   0% { transform: translate(0, 0) rotate(0deg); }
-  12% { transform: translate(-7px, 5px) rotate(-2.4deg); }
-  24% { transform: translate(8px, -6px) rotate(2.1deg); }
-  36% { transform: translate(-9px, -3px) rotate(-1.6deg); }
-  50% { transform: translate(6px, 7px) rotate(2.6deg); }
-  64% { transform: translate(-5px, -8px) rotate(-2.2deg); }
-  78% { transform: translate(9px, 4px) rotate(1.8deg); }
+  16% { transform: translate(-4px, 3px) rotate(-1.3deg); }
+  32% { transform: translate(4.5px, -3.5px) rotate(1.2deg); }
+  50% { transform: translate(-3.5px, -2px) rotate(-0.9deg); }
+  68% { transform: translate(3px, 4px) rotate(1.4deg); }
+  84% { transform: translate(-2.5px, -3px) rotate(-1.1deg); }
   100% { transform: translate(0, 0) rotate(0deg); }
 }
 
@@ -1771,15 +2308,22 @@ body > #rite-fx.rite-fx.is-bursting {
 }
 
 .punished-copy.ysrtv-phosphor {
-  --ysrtv-phosphor: #ff6d6d;
-  --ysrtv-phosphor-glow: rgba(255, 48, 48, 0.55);
-  letter-spacing: 0.05em;
+  --ysrtv-phosphor: #d7cfc8;
+  --ysrtv-phosphor-glow: transparent;
+  color: #d7cfc8;
+  letter-spacing: 0.04em;
+  text-shadow: none;
+  filter: none;
 }
 
 .punished-copy,
+.punished-copy.ysrtv-phosphor,
 .punished-copy.is-live {
   animation: none;
   transform: none;
+  color: #d7cfc8;
+  text-shadow: none;
+  filter: none;
 }
 
 html.is-punished.motion-on .rite-grain {
@@ -1819,7 +2363,51 @@ html.is-punished.motion-on .brand-glitch {
 @media (prefers-reduced-motion: reduce) {
   html.is-punished.motion-on .rite-grain,
   html.is-punished.motion-on .rite-roll,
-  html.is-punished.motion-on .rite-fx {
+  html.is-punished.motion-on .rite-fx,
+  html.is-punished.motion-on :is(
+    .brand-glitch,
+    #filter.header-filter,
+    .music-mute,
+    .tabs .tab,
+    .meter-card,
+    .search-form,
+    .login-form,
+    .catalog-results-head,
+    .catalog-detail-body,
+    .show-hero,
+    .freezer-section,
+    .library-card,
+    .catalog-card,
+    .download-queue-item,
+    .download-queue-empty,
+    button.episode,
+    #freezer-filter,
+    button.ghost,
+    a.ghost,
+    .punished-gate,
+    .library-delete-card,
+    .empty,
+    dialog,
+    .liquid-idle,
+    .catalog-card-poster,
+    .show-hero-poster,
+    .search-poster,
+    .library-card .poster,
+    .catalog-detail-poster
+  ),
+  html.is-punished.motion-on body > #status.status-banner {
     animation: none;
+  }
+
+  html.is-punished .punished-scatter {
+    transform: translate3d(var(--p-dx, 0px), var(--p-dy, 0px), 0) rotate(var(--p-rot, 0deg));
+  }
+
+  html.is-punished body > #status.status-banner.punished-scatter {
+    transform: translateX(-50%) translate3d(var(--p-dx, 0px), var(--p-dy, 0px), 0) rotate(var(--p-rot, 0deg));
+  }
+
+  html.is-punished.motion-on body > #status.status-banner:not(.punished-scatter) {
+    transform: translateX(-50%);
   }
 }

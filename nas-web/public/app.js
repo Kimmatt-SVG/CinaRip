@@ -86,6 +86,7 @@ const stopDownloadQueueButton = document.getElementById("stop-download-queue");
 const clearDownloadQueueButton = document.getElementById("clear-download-queue");
 
 let library = { movies: [], shows: [] };
+let jiggleMode = false;
 let searchResults = [];
 let searchCounts = null;
 let selectedCatalogMovie = null;
@@ -94,10 +95,66 @@ let catalogTvEpisodeOptions = [];
 let tvShowPlan = null;
 let catalogTvScanToken = 0;
 let lastQueueSnapshot = { items: [], counts: {}, running: false };
+let realQueueSnapshot = { items: [], counts: {}, running: false };
 let lastDoneCount = 0;
 let lastQueueRunning = null;
 const heardFailedIds = new Set();
 let playedQueueFinish = false;
+const CURSED_GRAVEYARD_SIZE = 6;
+const CURSED_GRAVEYARD_MIN = 4;
+const CURSED_FAIL_LINES = [
+  "why would you do this?",
+  "it was never going to finish",
+  "you shouldn't have pressed that",
+  "it knows you tried",
+  "this was never yours",
+  "stop reaching",
+  "the file remembers you",
+  "no."
+];
+const CURSED_JOB_TITLES = [
+  { title: "the last good thing", kind: "movie" },
+  { title: "something you wanted", kind: "movie" },
+  { title: "untitled.mkv", kind: "movie" },
+  { title: "watch me", kind: "movie" },
+  { title: "you left this running", kind: "movie" },
+  { title: "ready to watch", kind: "movie" },
+  { title: "don't open this", kind: "movie" },
+  { title: "final_final_REAL", kind: "movie" },
+  { title: "camrip_night.mp4", kind: "movie" },
+  { title: "the one you already have", kind: "movie" },
+  { title: "help.avi", kind: "movie" },
+  { title: "director's cut (you aren't)", kind: "movie" },
+  { title: "S01E01 · the invitation", kind: "episode" },
+  { title: "S01E07 · it hears you", kind: "episode" },
+  { title: "S03E13 · why would you do this", kind: "episode" },
+  { title: "S02E02 · leftovers", kind: "episode" },
+  { title: "S01E04 · stay in the house", kind: "episode" },
+  { title: "S00E00 · unaired", kind: "episode" }
+];
+const cursedQueue = {
+  active: false,
+  running: false,
+  gen: 0,
+  items: [],
+  current: null,
+  currentId: null,
+  syntheticIds: new Set(),
+  failedIds: new Set(),
+  timers: []
+};
+const cursedLibraryStats = {
+  on: false,
+  timer: 0,
+  glitchTimer: 0,
+  applying: false,
+  observer: null,
+  counts: null,
+  lastStorageLabel: "",
+  lastJobLabel: "",
+  lastQueueLabel: "",
+  lastSummary: ""
+};
 let lastRouteKey = null;
 let lastTornadoStatus = null;
 let lastHealth = null;
@@ -108,7 +165,6 @@ const motionSig = Object.create(null);
 const reduceMotionMq = window.matchMedia("(prefers-reduced-motion: reduce)");
 const splashEl = document.getElementById("splash");
 const splashLabelEl = document.getElementById("splash-label");
-const splashReadyBtn = document.getElementById("splash-ready");
 const SPLASH_MIN_MS = 750;
 const SPLASH_SESSION_KEY = "cinarip.splash.dismissed";
 let splashDismissed = false;
@@ -178,6 +234,7 @@ function motionFade(targets, options = {}) {
     complete() {
       list.forEach(clearMotionStyles);
       options.complete?.();
+      startChromeFloat();
     }
   };
   if (options.scaleFrom != null) props.scale = 1;
@@ -200,6 +257,7 @@ function setMeterTone(meter, tone) {
 
 function animateMeterFill(fill, percent, options = {}) {
   if (!fill) return;
+  if (isPunishedMode()) return;
   const next = Math.max(0, Math.min(100, Number(percent) || 0));
   let state = meterStates.get(fill);
   if (!state) {
@@ -236,6 +294,7 @@ function animateMeterFill(fill, percent, options = {}) {
 
 function animateCountLabel(el, nextValue, suffix) {
   if (!el) return;
+  if (isPunishedMode()) return;
   const next = Math.max(0, Number(nextValue) || 0);
   const key = "_count";
   const state = el[key] || { value: next };
@@ -329,7 +388,7 @@ function splashBlocksTiles() {
 }
 
 function canTiltPointer(event) {
-  if (!canMotion() || splashBlocksTiles() || !event) return false;
+  if (!canMotion() || splashBlocksTiles() || jiggleMode || !event) return false;
   return Number.isFinite(event.clientX) && Number.isFinite(event.clientY);
 }
 
@@ -475,6 +534,122 @@ function teardownAllTileMotion() {
   activeTiltCard = null;
   pendingTilt = null;
   document.querySelectorAll(".library-card, .catalog-card").forEach(stopTileFloat);
+  stopChromeFloat();
+}
+
+const LIQUID_BOX_SELECTOR = [
+  ".meter-card",
+  ".search-form",
+  ".login-form",
+  ".catalog-detail-body",
+  ".catalog-results-head",
+  ".show-hero",
+  ".freezer-section",
+  ".status-banner"
+].join(",");
+
+const LIQUID_SELECTOR = [
+  ".brand-glitch",
+  "#filter.header-filter",
+  ".music-mute",
+  ".tabs .tab",
+  ".meter-card",
+  ".search-form",
+  "button.ghost",
+  "a.ghost",
+  "#freezer-filter",
+  "button.episode",
+  ".catalog-detail-body",
+  ".catalog-results-head",
+  ".show-hero",
+  ".freezer-section",
+  ".status-banner"
+].join(",");
+
+const LIQUID_VARS = [
+  "--liquid-dur",
+  "--liquid-delay",
+  "--liquid-x-dur",
+  "--liquid-x-delay",
+  "--liquid-x-amp",
+  "--liquid-y-amp",
+  "--liquid-r-dur",
+  "--liquid-r-delay",
+  "--liquid-r-amp"
+];
+
+let chromeFloatSeq = 0;
+
+function nestedInFloatingBox(el) {
+  const parent = el?.parentElement;
+  if (!parent) return false;
+  if (parent.closest(".liquid-idle")) return true;
+  const box = parent.closest(LIQUID_BOX_SELECTOR);
+  return Boolean(box && box !== el);
+}
+
+function canChromeFloat(el) {
+  if (!el) return false;
+  if (el.closest("#splash, #punished-veil, #rite-fx, dialog")) return false;
+  if (el.closest(".library-card, .catalog-card, .tile-float-wrap")) return false;
+  if (el.classList.contains("freezer-corner")) return false;
+  if (el.classList.contains("poster-delete")) return false;
+  if (nestedInFloatingBox(el)) return false;
+  return true;
+}
+
+function clearLiquidIdle(el) {
+  if (!el?.classList?.contains("liquid-idle")) return;
+  el.classList.remove("liquid-idle");
+  LIQUID_VARS.forEach((name) => el.style.removeProperty(name));
+  el.style.removeProperty("--press-s");
+}
+
+function stopChromeFloat(root = document) {
+  const scope = root.querySelectorAll ? root : document;
+  const nodes = scope.querySelectorAll ? scope.querySelectorAll(".liquid-idle") : [];
+  const list = root.classList?.contains("liquid-idle") ? [root, ...nodes] : [...nodes];
+  list.forEach(clearLiquidIdle);
+}
+
+function stripNestedChromeFloat(root = document) {
+  const scope = root.querySelectorAll ? root : document;
+  if (!scope.querySelectorAll) return;
+  scope.querySelectorAll(".liquid-idle .liquid-idle").forEach(clearLiquidIdle);
+  const nestedInBoxes = LIQUID_BOX_SELECTOR.split(",")
+    .map((sel) => `${sel.trim()} .liquid-idle`)
+    .join(", ");
+  scope.querySelectorAll(nestedInBoxes).forEach(clearLiquidIdle);
+}
+
+function startChromeFloat(root = document) {
+  if (!canMotion() || document.documentElement.classList.contains("is-punished")) {
+    stopChromeFloat(root);
+    return;
+  }
+  stripNestedChromeFloat(root);
+  const scope = root.querySelectorAll ? root : document;
+  const found = scope.querySelectorAll ? [...scope.querySelectorAll(LIQUID_SELECTOR)] : [];
+  if (root.matches?.(LIQUID_SELECTOR)) found.unshift(root);
+  found.forEach((el) => {
+    if (el.classList.contains("liquid-idle") || !canChromeFloat(el)) return;
+    const n = chromeFloatSeq++;
+    const xSign = n % 2 === 0 ? 1 : -1;
+    const rSign = n % 3 === 0 ? -1 : 1;
+    el.classList.add("liquid-idle");
+    el.style.setProperty("--liquid-dur", `${3.05 + (n % 6) * 0.4}s`);
+    el.style.setProperty("--liquid-delay", `${-((n * 0.39) % 2.7)}s`);
+    el.style.setProperty("--liquid-x-dur", `${5.6 + (n % 8) * 0.45}s`);
+    el.style.setProperty("--liquid-x-delay", `${-((n * 0.63) % 4.5)}s`);
+    el.style.setProperty("--liquid-x-amp", `${xSign * (1.6 + (n % 3) * 0.7)}px`);
+    el.style.setProperty("--liquid-y-amp", `${-(2.1 + (n % 4) * 0.55)}px`);
+    el.style.setProperty("--liquid-r-dur", `${7.8 + (n % 5) * 0.65}s`);
+    el.style.setProperty("--liquid-r-delay", `${-((n * 0.47) % 3.6)}s`);
+    if (!el.matches("input, select, textarea")) {
+      el.style.setProperty("--liquid-r-amp", `${rSign * (0.22 + (n % 4) * 0.08)}deg`);
+    }
+  });
+  stripNestedChromeFloat(root);
 }
 
 function wireTileMotion() {
@@ -482,9 +657,17 @@ function wireTileMotion() {
   document.addEventListener("pointerleave", () => {
     if (activeTiltCard) leaveTile(activeTiltCard);
   });
+  document.addEventListener("pointerdown", onJigglePointerDown, { capture: true });
+  document.addEventListener("pointermove", onJigglePointerMove, { capture: true, passive: true });
+  document.addEventListener("pointerup", onJigglePointerUp, { capture: true });
+  document.addEventListener("pointercancel", onJigglePointerUp, { capture: true });
+  document.addEventListener("contextmenu", (event) => {
+    if (jiggleTargetCard(event.target)) event.preventDefault();
+  });
   const onReduce = () => {
     if (canMotion()) {
       startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
+      startChromeFloat();
       return;
     }
     teardownAllTileMotion();
@@ -578,8 +761,347 @@ function freezerCornerButton(id, { thaw = false } = {}) {
   </button>`;
 }
 
+function posterDeleteButton(id, title) {
+  const name = escapeAttr(title);
+  return `<button type="button" class="poster-delete" data-delete="${escapeAttr(id)}" data-title="${name}" title="Delete ${name}" aria-label="Delete ${name}">
+    <span aria-hidden="true">×</span>
+  </button>`;
+}
+
+function posterOverlays(id, title, { thaw = false } = {}) {
+  return `${freezerCornerButton(id, { thaw })}${posterDeleteButton(id, title)}`;
+}
+
 function wrapPosterMarkup(posterHtml, overlayHtml = "") {
   return `<div class="tile-scene"><div class="tile-float-wrap">${posterHtml}${overlayHtml}</div></div>`;
+}
+
+const JIGGLE_HOLD_MS = 520;
+const JIGGLE_CLICK_GUARD_MS = 480;
+const JIGGLE_AMP = { n: 0 };
+let jiggleEnteredAt = 0;
+let jiggleHoldTimer = 0;
+let jiggleHoldStart = null;
+let jiggleExitGen = 0;
+let suppressNextCardClick = false;
+let pendingDelete = null;
+let deleteConfirmGen = 0;
+
+const deleteVeil = document.getElementById("library-delete-veil");
+const deleteCopy = document.getElementById("library-delete-copy");
+const deleteCancel = document.getElementById("library-delete-cancel");
+const deleteConfirm = document.getElementById("library-delete-confirm");
+
+function findLocalLibraryTitle(id) {
+  const movie = (library.movies || []).find((item) => item.id === id);
+  if (movie) return { kind: "movie", item: movie };
+  const show = (library.shows || []).find((item) => item.id === id);
+  if (show) return { kind: "tv-show", item: show };
+  const frozenMovie = (library.frozen?.movies || []).find((item) => item.id === id);
+  if (frozenMovie) return { kind: "movie", item: frozenMovie };
+  const frozenShow = (library.frozen?.shows || []).find((item) => item.id === id);
+  if (frozenShow) return { kind: "tv-show", item: frozenShow };
+  return null;
+}
+
+function jiggleTargetCard(node) {
+  const card = node?.closest?.(".library-card");
+  if (!card) return null;
+  if (!card.closest("#library-list, #freezer-list")) return null;
+  return card;
+}
+
+function clearJiggleHold() {
+  if (jiggleHoldTimer) {
+    window.clearTimeout(jiggleHoldTimer);
+    jiggleHoldTimer = 0;
+  }
+  jiggleHoldStart = null;
+}
+
+function jiggleWraps() {
+  return document.querySelectorAll("#library-list .library-card .tile-float-wrap, #freezer-list .library-card .tile-float-wrap");
+}
+
+function applyJiggleAmp(n) {
+  const value = String(n);
+  document.documentElement.style.setProperty("--jiggle-amp", value);
+  jiggleWraps().forEach((wrap) => wrap.style.setProperty("--jiggle-amp", value));
+}
+
+function tweenJiggleAmp(to, duration) {
+  if (!canMotion()) {
+    JIGGLE_AMP.n = to;
+    applyJiggleAmp(to);
+    return Promise.resolve();
+  }
+  window.anime.remove(JIGGLE_AMP);
+  return window
+    .anime({
+      targets: JIGGLE_AMP,
+      n: to,
+      duration,
+      easing: "easeInOutSine",
+      update() {
+        applyJiggleAmp(JIGGLE_AMP.n);
+      }
+    })
+    .finished.catch(() => {});
+}
+
+function syncJiggleMode() {
+  const settling = document.documentElement.classList.contains("is-jiggle-settling");
+  document.documentElement.classList.toggle("is-jiggling", jiggleMode || settling);
+  document.querySelectorAll("#library-list .library-card, #freezer-list .library-card").forEach((card, i) => {
+    const wrap = tileFloatWrap(card);
+    if (!wrap) return;
+    if (!jiggleMode && !settling) {
+      wrap.style.removeProperty("--jiggle-delay");
+      wrap.style.removeProperty("--jiggle-dur");
+      wrap.style.removeProperty("--jiggle-amp");
+      return;
+    }
+    wrap.style.setProperty("--jiggle-delay", `${-((i * 41) % 220)}ms`);
+    wrap.style.setProperty("--jiggle-dur", `${0.3 + (i % 5) * 0.028}s`);
+  });
+}
+
+function enterJiggle() {
+  if (jiggleMode || splashBlocksTiles()) return;
+  jiggleExitGen += 1;
+  jiggleMode = true;
+  jiggleEnteredAt = Date.now();
+  suppressNextCardClick = true;
+  if (activeTiltCard) leaveTile(activeTiltCard);
+  applyJiggleAmp(JIGGLE_AMP.n);
+  document.documentElement.classList.remove("is-jiggle-settling");
+  syncJiggleMode();
+  window.requestAnimationFrame(() => {
+    if (!jiggleMode) return;
+    tweenJiggleAmp(1, 420);
+  });
+  try {
+    navigator.vibrate?.(10);
+  } catch {
+    // ignore
+  }
+  const buttons = document.querySelectorAll(".poster-delete");
+  if (canMotion() && buttons.length) {
+    window.anime.remove(buttons);
+    window.anime.set(buttons, { scale: 0.72, opacity: 0 });
+    window.anime({
+      targets: buttons,
+      scale: 1,
+      opacity: 1,
+      duration: 320,
+      delay: window.anime.stagger(14),
+      easing: "easeOutCubic"
+    });
+  }
+}
+
+function exitJiggle() {
+  if (!jiggleMode && !document.documentElement.classList.contains("is-jiggle-settling")) return;
+  hideDeleteConfirm();
+  jiggleMode = false;
+  const gen = ++jiggleExitGen;
+  document.documentElement.classList.add("is-jiggle-settling");
+  const buttons = document.querySelectorAll(".poster-delete");
+  if (canMotion() && buttons.length) {
+    window.anime.remove(buttons);
+    window.anime({
+      targets: buttons,
+      scale: 0.84,
+      opacity: 0,
+      duration: 260,
+      easing: "easeInQuad"
+    });
+  }
+  tweenJiggleAmp(0, 360).then(() => {
+    if (gen !== jiggleExitGen) return;
+    document.documentElement.classList.remove("is-jiggling", "is-jiggle-settling");
+    document.documentElement.style.removeProperty("--jiggle-amp");
+    syncJiggleMode();
+    startTileFloat(document.querySelectorAll("#library-list .library-card, #freezer-list .library-card"));
+  });
+}
+
+function hideDeleteConfirm() {
+  const gen = ++deleteConfirmGen;
+  pendingDelete = null;
+  if (!deleteVeil || deleteVeil.hidden) return;
+  const card = deleteVeil.querySelector(".library-delete-card");
+  if (!canMotion()) {
+    deleteVeil.hidden = true;
+    return;
+  }
+  window.anime.remove(deleteVeil);
+  if (card) window.anime.remove(card);
+  deleteVeil.style.pointerEvents = "none";
+  window.anime({
+    targets: deleteVeil,
+    opacity: 0,
+    duration: 180,
+    easing: "easeInQuad",
+    complete() {
+      if (gen !== deleteConfirmGen) return;
+      deleteVeil.hidden = true;
+      deleteVeil.style.removeProperty("opacity");
+      deleteVeil.style.removeProperty("pointer-events");
+    }
+  });
+  if (card) {
+    window.anime({
+      targets: card,
+      scale: 0.94,
+      translateY: 10,
+      opacity: 0,
+      duration: 180,
+      easing: "easeInQuad"
+    });
+  }
+}
+
+function askDeleteTitle(id, title, card) {
+  if (!id) return;
+  const match = findLocalLibraryTitle(id);
+  const name = title || match?.item?.title || "this title";
+  const isShow = match?.kind === "tv-show";
+  pendingDelete = { id, title: name, card, kind: match?.kind || "movie" };
+  if (deleteCopy) {
+    deleteCopy.textContent = isShow
+      ? `Delete “${name}” and all of its episodes from the library? This removes the files from the NAS.`
+      : `Delete “${name}” from the library? This removes the video from the NAS.`;
+  }
+  if (!deleteVeil) {
+    confirmDeleteTitle();
+    return;
+  }
+  deleteConfirmGen += 1;
+  deleteVeil.hidden = false;
+  deleteVeil.style.pointerEvents = "none";
+  const panel = deleteVeil.querySelector(".library-delete-card");
+  if (!canMotion()) {
+    deleteVeil.style.pointerEvents = "auto";
+    return;
+  }
+  window.anime.remove(deleteVeil);
+  if (panel) window.anime.remove(panel);
+  window.anime.set(deleteVeil, { opacity: 0 });
+  if (panel) window.anime.set(panel, { scale: 0.94, translateY: 12, opacity: 0 });
+  window.anime({
+    targets: deleteVeil,
+    opacity: 1,
+    duration: 220,
+    easing: "easeOutQuad",
+    complete() {
+      deleteVeil.style.pointerEvents = "auto";
+    }
+  });
+  if (panel) {
+    window.anime({
+      targets: panel,
+      scale: 1,
+      translateY: 0,
+      opacity: 1,
+      duration: 340,
+      easing: "easeOutCubic"
+    });
+  }
+}
+
+function animateRemoveCard(card) {
+  if (!card) return Promise.resolve();
+  card.classList.add("is-deleting");
+  card.style.pointerEvents = "none";
+  const scene = card.querySelector(".tile-scene") || card;
+  if (!canMotion()) {
+    card.remove();
+    return Promise.resolve();
+  }
+  window.anime.remove(scene);
+  return window
+    .anime({
+      targets: scene,
+      scale: 0.12,
+      opacity: 0,
+      translateY: 22,
+      rotateZ: -8,
+      duration: 420,
+      easing: "easeInCubic"
+    })
+    .finished.catch(() => {})
+    .then(() => {
+      card.remove();
+    });
+}
+
+async function confirmDeleteTitle() {
+  const pending = pendingDelete;
+  if (!pending?.id) return;
+  hideDeleteConfirm();
+  try {
+    showStatus("Deleting…");
+    const result = await postJson("/api/library/delete", { id: pending.id });
+    await animateRemoveCard(pending.card);
+    showStatus(result.message || `Deleted ${pending.title}`);
+    await refreshLibrary({ skipMotion: true, skipRoute: true });
+    if (jiggleMode) syncJiggleMode();
+    const leftover = document.querySelectorAll("#library-list .library-card, #freezer-list .library-card");
+    if (!leftover.length) exitJiggle();
+  } catch (error) {
+    pending.card?.classList.remove("is-deleting");
+    showStatus(noteError(error.message || "Could not delete that title."), { error: true });
+  }
+}
+
+function onJigglePointerDown(event) {
+  if (event.button != null && event.button !== 0) return;
+  if (splashBlocksTiles() || jiggleMode) return;
+  if (event.target.closest(".poster-delete, .freezer-corner")) return;
+  const card = jiggleTargetCard(event.target);
+  if (!card) return;
+  const startX = event.clientX;
+  const startY = event.clientY;
+  jiggleHoldStart = { x: startX, y: startY };
+  clearJiggleHold();
+  jiggleHoldTimer = window.setTimeout(() => {
+    jiggleHoldTimer = 0;
+    enterJiggle();
+  }, JIGGLE_HOLD_MS);
+}
+
+function onJigglePointerMove(event) {
+  if (!jiggleHoldTimer || !jiggleHoldStart) return;
+  const dx = event.clientX - jiggleHoldStart.x;
+  const dy = event.clientY - jiggleHoldStart.y;
+  if (dx * dx + dy * dy > 120) clearJiggleHold();
+}
+
+function onJigglePointerUp() {
+  clearJiggleHold();
+}
+
+function handleLibraryGridClick(event) {
+  const deleteButton = event.target.closest(".poster-delete");
+  if (deleteButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    askDeleteTitle(deleteButton.dataset.delete, deleteButton.dataset.title, deleteButton.closest(".library-card"));
+    return true;
+  }
+  if (jiggleMode && event.target.closest(".library-card")) {
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+  if (suppressNextCardClick) {
+    event.preventDefault();
+    event.stopPropagation();
+    suppressNextCardClick = false;
+    return true;
+  }
+  return false;
 }
 
 function formatBytes(bytes) {
@@ -746,6 +1268,7 @@ function transitionViews(to, { enterOnly = false } = {}) {
     clearViewMotion(to);
     to.hidden = false;
     startTileFloat(to.querySelectorAll(".library-card, .catalog-card"));
+    startChromeFloat(to);
   };
   const finish = () => {
     pending -= 1;
@@ -1182,9 +1705,9 @@ function freezerCard(item, options = {}) {
         </button>`
     : `<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-play="${item.id}" data-title="${name}" title="${name}" aria-label="${name}">
           <em data-kind="movie">Movie</em>
-        </button>`, freezerCornerButton(item.id, { thaw: true }));
+        </button>`, posterOverlays(item.id, item.title, { thaw: true }));
   return `
-    <article class="library-card">
+    <article class="library-card" data-title-id="${escapeAttr(item.id)}">
       ${poster}
       <p class="freezer-status">${escapeHtml(compressStatusLabel(item))}</p>
       ${restore}
@@ -1214,6 +1737,7 @@ function renderFreezerPage(options = {}) {
       "freezer"
     );
     bindTileGrid([], { key: "freezer", skip: options.skipMotion });
+    syncJiggleMode();
     return;
   }
   const cards = [
@@ -1225,26 +1749,27 @@ function renderFreezerPage(options = {}) {
     key: "freezer",
     skip: options.skipMotion
   });
+  syncJiggleMode();
 }
 
 function libraryCard(item, options = {}) {
   const frozen = Boolean(options.frozen || item.frozen);
   const isShow = item.kind === "tv-show" || options.isShow;
-  const freezeIcon = freezerCornerButton(item.id, { thaw: frozen });
+  const overlays = posterOverlays(item.id, item.title, { thaw: frozen });
   const name = escapeAttr(item.title);
   if (isShow) {
     return `
-      <article class="library-card">
+      <article class="library-card" data-title-id="${escapeAttr(item.id)}">
         ${wrapPosterMarkup(`<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-show="${escapeAttr(item.id)}" title="${name}" aria-label="${name}">
           <em>Series</em>
-        </button>`, freezeIcon)}
+        </button>`, overlays)}
       </article>`;
   }
   return `
-    <article class="library-card">
+    <article class="library-card" data-title-id="${escapeAttr(item.id)}">
       ${wrapPosterMarkup(`<button type="button" class="poster" style="${posterStyle(item.posterId)}" data-play="${item.id}" data-title="${name}" title="${name}" aria-label="${name}">
           <em data-kind="movie">Movie</em>
-        </button>`, freezeIcon)}
+        </button>`, overlays)}
     </article>`;
 }
 
@@ -1265,6 +1790,7 @@ function renderLibrary(options = {}) {
       "library"
     );
     bindTileGrid([], { key: "library", skip: options.skipMotion });
+    syncJiggleMode();
     return;
   }
 
@@ -1281,6 +1807,7 @@ function renderLibrary(options = {}) {
     key: "library",
     skip: options.skipMotion
   });
+  syncJiggleMode();
 }
 
 function findShow(showId) {
@@ -1383,6 +1910,7 @@ function route() {
   const key = searching ? "search" : freezer ? "freezer" : settings ? "settings" : showId ? `show:${showId}` : "library";
   const changed = lastRouteKey !== key;
   lastRouteKey = key;
+  if (changed && jiggleMode) exitJiggle();
   if (changed && settings) refreshSettingsDiagnostics().catch(() => {});
   if (changed) transitionViews(incoming, { enterOnly: incoming === viewShow });
 }
@@ -1396,6 +1924,499 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replace(/"/g, "&quot;");
+}
+
+function isPunishedMode() {
+  try {
+    if (window.CinaRipPunished && typeof window.CinaRipPunished.isOn === "function") {
+      return Boolean(window.CinaRipPunished.isOn());
+    }
+  } catch {
+    // ignore
+  }
+  return document.documentElement.classList.contains("is-punished");
+}
+
+function cursedNegInt() {
+  return -1 - Math.floor(Math.random() * 9999);
+}
+
+function rollCursedLibraryStats() {
+  cursedLibraryStats.counts = {
+    movies: cursedNegInt(),
+    series: cursedNegInt(),
+    episodes: cursedNegInt(),
+    freezer: cursedNegInt()
+  };
+}
+
+function cursedLibrarySummaryText() {
+  const counts = cursedLibraryStats.counts;
+  if (!counts) return "";
+  return `${counts.movies} movies · ${counts.series} series · ${counts.episodes} episodes · ${counts.freezer} in Freezer`;
+}
+
+function cursedImpossiblePercent() {
+  const pick = Math.random();
+  if (pick < 0.1) return "-999%";
+  if (pick < 0.18) return "666%";
+  if (pick < 0.26) return "NaN%";
+  if (pick < 0.34) return "13.37%";
+  if (pick < 0.4) return "NaN";
+  if (pick < 0.46) return "???%";
+  if (pick < 0.52) return "undefined%";
+  if (pick < 0.6) return `${-1 - Math.floor(Math.random() * 9999)}%`;
+  if (pick < 0.68) return `${101 + Math.floor(Math.random() * 899)}%`;
+  if (pick < 0.76) return `${(Math.random() * 240 - 80).toFixed(2)}%`;
+  if (pick < 0.84) return `${Math.floor(Math.random() * 9)}.${Math.floor(Math.random() * 90 + 10)}e${Math.floor(Math.random() * 6)}%`;
+  if (pick < 0.92) return `${Math.floor(Math.random() * 180) - 40}% used`;
+  return `${Math.random() < 0.5 ? "-" : ""}${Math.floor(Math.random() * 999)}%`;
+}
+
+function cursedBarWidth() {
+  const pick = Math.random();
+  if (pick < 0.12) return 0;
+  if (pick < 0.22) return 1 + Math.random() * 7;
+  if (pick < 0.34) return 100 + Math.random() * 88;
+  if (pick < 0.46) return 88 + Math.random() * 24;
+  if (pick < 0.58) return Math.random() * 100;
+  if (pick < 0.7) return 6 + Math.random() * 18;
+  if (pick < 0.82) return 140 + Math.random() * 50;
+  if (pick < 0.9) return 50 + Math.random() * 20;
+  return Math.random() < 0.5 ? 2 : 97;
+}
+
+function markCursedKeep(el) {
+  if (el) el.setAttribute("data-cursed-keep", "");
+}
+
+function stampCursedFill(fill, width) {
+  if (!fill) return;
+  const state = meterStates.get(fill);
+  if (state && typeof window.anime === "function") window.anime.remove(state);
+  const next = Number(width);
+  const cssWidth = Number.isFinite(next) ? Math.max(0, next) : Math.random() * 160;
+  fill.style.width = `${cssWidth.toFixed(2)}%`;
+  fill.style.transition = "none";
+  if (state) state.value = Math.min(100, cssWidth);
+  else meterStates.set(fill, { value: Math.min(100, cssWidth) });
+  const meter = fill.closest(".plasma-meter, .queue-item-meter");
+  if (meter) meter.classList.toggle("is-cursed-overflow", cssWidth > 100);
+}
+
+function cursedStatsWereOverwritten() {
+  if (storageLabel && storageLabel.textContent !== cursedLibraryStats.lastStorageLabel) return true;
+  if (jobLabel && cursedLibraryStats.lastJobLabel && jobLabel.textContent !== cursedLibraryStats.lastJobLabel) return true;
+  if (downloadQueueSummary && cursedLibraryStats.lastQueueLabel && downloadQueueSummary.textContent !== cursedLibraryStats.lastQueueLabel) return true;
+  if (summaryEl && cursedLibraryStats.counts && summaryEl.textContent !== cursedLibraryStats.lastSummary) return true;
+  return false;
+}
+
+function paintCursedCounts() {
+  if (!isPunishedMode()) return;
+  if (!cursedLibraryStats.counts) rollCursedLibraryStats();
+  cursedLibraryStats.applying = true;
+  try {
+    markCursedKeep(summaryEl);
+    if (summaryEl) {
+      const text = cursedLibrarySummaryText();
+      summaryEl.textContent = text;
+      cursedLibraryStats.lastSummary = text;
+    }
+  } finally {
+    cursedLibraryStats.applying = false;
+  }
+}
+
+function paintCursedGlitch() {
+  if (!isPunishedMode()) return;
+  cursedLibraryStats.applying = true;
+  try {
+    markCursedKeep(storageLabel);
+    markCursedKeep(jobLabel);
+    markCursedKeep(downloadQueueSummary);
+    if (storageLabel) {
+      if (typeof window.anime === "function" && storageLabel._count) window.anime.remove(storageLabel._count);
+      const text = cursedImpossiblePercent();
+      storageLabel.textContent = text;
+      cursedLibraryStats.lastStorageLabel = text;
+      if (storageLabel._count) storageLabel._count.value = -999;
+    }
+    if (jobLabel) {
+      const text = cursedImpossiblePercent();
+      jobLabel.textContent = text;
+      cursedLibraryStats.lastJobLabel = text;
+    }
+    if (downloadQueueSummary) {
+      const text = cursedImpossiblePercent();
+      downloadQueueSummary.textContent = text;
+      cursedLibraryStats.lastQueueLabel = text;
+    }
+    if (storageMeter) setMeterTone(storageMeter, "critical");
+    if (jobMeter) {
+      jobMeter.classList.add("is-running", "is-active");
+      setMeterTone(jobMeter, "critical");
+    }
+    if (queueMeter) {
+      queueMeter.hidden = false;
+      queueMeter.classList.add("is-running", "is-active");
+      setMeterTone(queueMeter, "critical");
+    }
+    if (jobCard) {
+      jobCard.hidden = false;
+      jobCardVisible = true;
+    }
+    stampCursedFill(storageBar, cursedBarWidth());
+    stampCursedFill(jobBar, cursedBarWidth());
+    stampCursedFill(queueBar, cursedBarWidth());
+    document.querySelectorAll(".queue-item-fill").forEach((fill) => stampCursedFill(fill, cursedBarWidth()));
+  } finally {
+    cursedLibraryStats.applying = false;
+  }
+}
+
+function scheduleCursedGlitch() {
+  if (cursedLibraryStats.glitchTimer) window.clearTimeout(cursedLibraryStats.glitchTimer);
+  const reduced = reduceMotionMq.matches;
+  const wait = reduced ? 140 + Math.floor(Math.random() * 90) : 48 + Math.floor(Math.random() * 90);
+  cursedLibraryStats.glitchTimer = window.setTimeout(() => {
+    cursedLibraryStats.glitchTimer = 0;
+    if (!isPunishedMode()) {
+      stopCursedLibraryStats();
+      return;
+    }
+    paintCursedGlitch();
+    scheduleCursedGlitch();
+  }, wait);
+}
+
+function scheduleCursedLibraryReroll() {
+  if (cursedLibraryStats.timer) window.clearTimeout(cursedLibraryStats.timer);
+  cursedLibraryStats.timer = window.setTimeout(() => {
+    cursedLibraryStats.timer = 0;
+    if (!isPunishedMode()) {
+      stopCursedLibraryStats();
+      return;
+    }
+    rollCursedLibraryStats();
+    paintCursedCounts();
+    scheduleCursedLibraryReroll();
+  }, 2800 + Math.floor(Math.random() * 3400));
+}
+
+function startCursedLibraryStats() {
+  markCursedKeep(storageLabel);
+  markCursedKeep(summaryEl);
+  markCursedKeep(jobLabel);
+  markCursedKeep(downloadQueueSummary);
+  if (!cursedLibraryStats.on) {
+    cursedLibraryStats.on = true;
+    rollCursedLibraryStats();
+    scheduleCursedLibraryReroll();
+    scheduleCursedGlitch();
+  }
+  paintCursedCounts();
+  paintCursedGlitch();
+  if (!cursedLibraryStats.observer && typeof MutationObserver === "function") {
+    cursedLibraryStats.observer = new MutationObserver(() => {
+      if (cursedLibraryStats.applying || !cursedLibraryStats.on || !isPunishedMode()) return;
+      if (!cursedStatsWereOverwritten()) return;
+      paintCursedCounts();
+      paintCursedGlitch();
+    });
+    const opts = { characterData: true, childList: true, subtree: true };
+    [storageLabel, summaryEl, jobLabel, downloadQueueSummary].forEach((el) => {
+      if (el) cursedLibraryStats.observer.observe(el, opts);
+    });
+  }
+}
+
+function stopCursedLibraryStats() {
+  if (cursedLibraryStats.timer) {
+    window.clearTimeout(cursedLibraryStats.timer);
+    cursedLibraryStats.timer = 0;
+  }
+  if (cursedLibraryStats.glitchTimer) {
+    window.clearTimeout(cursedLibraryStats.glitchTimer);
+    cursedLibraryStats.glitchTimer = 0;
+  }
+  const wasOn = cursedLibraryStats.on;
+  cursedLibraryStats.on = false;
+  cursedLibraryStats.counts = null;
+  cursedLibraryStats.lastStorageLabel = "";
+  cursedLibraryStats.lastJobLabel = "";
+  cursedLibraryStats.lastQueueLabel = "";
+  cursedLibraryStats.lastSummary = "";
+  document.querySelectorAll(".is-cursed-overflow").forEach((el) => el.classList.remove("is-cursed-overflow"));
+  [storageBar, jobBar, queueBar].forEach((fill) => {
+    if (fill) fill.style.removeProperty("transition");
+  });
+  document.querySelectorAll(".queue-item-fill").forEach((fill) => fill.style.removeProperty("transition"));
+  if (wasOn) {
+    if (storageLabel && storageLabel._count) storageLabel._count.value = 0;
+    refreshLibrary({ skipRoute: true, skipMotion: true }).catch(() => {});
+    refreshJobs().catch(() => {});
+  }
+}
+
+function syncCursedLibraryStats() {
+  if (isPunishedMode()) startCursedLibraryStats();
+  else if (cursedLibraryStats.on) stopCursedLibraryStats();
+}
+
+function pickCursedFailLine() {
+  if (Math.random() < 0.42) return CURSED_FAIL_LINES[0];
+  return CURSED_FAIL_LINES[1 + Math.floor(Math.random() * (CURSED_FAIL_LINES.length - 1))];
+}
+
+function recountQueueItems(items) {
+  const list = Array.isArray(items) ? items : [];
+  return {
+    total: list.length,
+    pending: list.filter((item) => item.status === "pending").length,
+    done: list.filter((item) => item.status === "done").length,
+    failed: list.filter((item) => item.status === "failed").length,
+    movies: list.filter((item) => item.kind !== "episode").length,
+    episodes: list.filter((item) => item.kind === "episode").length
+  };
+}
+
+function shuffleCursedSpecs() {
+  const copy = CURSED_JOB_TITLES.slice();
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const swap = copy[i];
+    copy[i] = copy[j];
+    copy[j] = swap;
+  }
+  return copy;
+}
+
+function makeCursedGraveItem(spec, index) {
+  const id = `cursed-grave-${index}-${Math.random().toString(16).slice(2, 6)}`;
+  cursedQueue.syntheticIds.add(id);
+  cursedQueue.failedIds.add(id);
+  heardFailedIds.add(id);
+  const kind = spec.kind === "episode" ? "episode" : "movie";
+  const item = {
+    id,
+    kind,
+    title: spec.title,
+    movieUrl: `/movie/cursed/${index}`,
+    destination: "nas",
+    status: "failed",
+    error: pickCursedFailLine(),
+    passRetries: 1 + Math.floor(Math.random() * 6),
+    addedAt: Date.now() - Math.floor(Math.random() * 86400000),
+    progress: 28 + Math.floor(Math.random() * 67),
+    qualityLabel: "1080p",
+    posterUrl: null
+  };
+  if (kind === "episode") {
+    item.showTitle = String(spec.title.split(" · ")[0] || "TV Show");
+    item.season = 1;
+    item.episode = index + 1;
+    item.episodeTitle = spec.title;
+  }
+  return item;
+}
+
+function buildCursedGraveyard() {
+  const specs = shuffleCursedSpecs();
+  const items = [];
+  for (let i = 0; i < CURSED_GRAVEYARD_SIZE; i += 1) {
+    const spec = specs[i % specs.length];
+    const title = i >= specs.length ? `${spec.title} (${i + 1})` : spec.title;
+    items.push(makeCursedGraveItem({ ...spec, title }, i));
+  }
+  const pinned = items[Math.floor(Math.random() * items.length)];
+  if (pinned) pinned.error = "why would you do this?";
+  return items;
+}
+
+function ensureCursedGraveyard() {
+  if (!isPunishedMode()) return;
+  if (cursedQueue.running && cursedQueue.items.length) {
+    cursedQueue.active = true;
+    return;
+  }
+  const failedCount = cursedQueue.items.filter((item) => item.status === "failed").length;
+  const tooMany = cursedQueue.items.length > CURSED_GRAVEYARD_SIZE;
+  if (cursedQueue.active && failedCount >= CURSED_GRAVEYARD_MIN && !tooMany) return;
+  cursedQueue.syntheticIds.clear();
+  cursedQueue.failedIds.clear();
+  cursedQueue.items = buildCursedGraveyard();
+  cursedQueue.active = true;
+  cursedQueue.current = null;
+  cursedQueue.currentId = null;
+}
+
+function refillCursedGraveyard() {
+  cursedQueue.running = false;
+  cursedQueue.gen += 1;
+  stopCursedTimers();
+  cursedQueue.syntheticIds.clear();
+  cursedQueue.failedIds.clear();
+  cursedQueue.items = buildCursedGraveyard();
+  cursedQueue.active = true;
+  cursedQueue.current = null;
+  cursedQueue.currentId = null;
+  paintCursedQueue();
+}
+
+function pickCursedHopeItem() {
+  ensureCursedGraveyard();
+  const failed = cursedQueue.items.filter((item) => item.status === "failed");
+  const item = failed[Math.floor(Math.random() * failed.length)] || cursedQueue.items[0];
+  if (!item) return null;
+  heardFailedIds.delete(item.id);
+  cursedQueue.failedIds.delete(item.id);
+  item.status = "pending";
+  item.error = null;
+  item.progress = 0;
+  cursedQueue.items = [item, ...cursedQueue.items.filter((row) => row.id !== item.id)];
+  return item;
+}
+
+function stopCursedTimers() {
+  cursedQueue.timers.splice(0).forEach((id) => window.clearTimeout(id));
+}
+
+function dropCursedQueue() {
+  cursedQueue.gen += 1;
+  cursedQueue.active = false;
+  cursedQueue.running = false;
+  cursedQueue.items = [];
+  cursedQueue.current = null;
+  cursedQueue.currentId = null;
+  cursedQueue.syntheticIds.clear();
+  cursedQueue.failedIds.clear();
+  stopCursedTimers();
+}
+
+function buildCursedSnapshot() {
+  return {
+    running: cursedQueue.running,
+    cancelRequested: false,
+    currentId: cursedQueue.currentId,
+    current: cursedQueue.current,
+    items: cursedQueue.items.map((item) => ({ ...item })),
+    counts: recountQueueItems(cursedQueue.items)
+  };
+}
+
+function paintCursedQueue() {
+  const snapshot = buildCursedSnapshot();
+  lastQueueSnapshot = snapshot;
+  renderJobs(snapshot);
+}
+
+function restoreRealQueue() {
+  dropCursedQueue();
+  renderJobs(realQueueSnapshot);
+}
+
+function syncCursedQueue() {
+  if (isPunishedMode()) {
+    ensureCursedGraveyard();
+    paintCursedQueue();
+    return;
+  }
+  if (!cursedQueue.active) {
+    updateQueueControls(lastQueueSnapshot);
+    return;
+  }
+  restoreRealQueue();
+  refreshJobs().catch(() => {});
+}
+
+function cursedWait(ms, gen) {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      cursedQueue.timers = cursedQueue.timers.filter((id) => id !== timer);
+      resolve(cursedQueue.gen === gen && cursedQueue.running && isPunishedMode());
+    }, ms);
+    cursedQueue.timers.push(timer);
+  });
+}
+
+function failCursedItem(item, { silent = false } = {}) {
+  if (!item) return;
+  item.status = "failed";
+  item.error = pickCursedFailLine();
+  item.progress = Math.max(Number(item.progress) || 0, 76);
+  cursedQueue.failedIds.add(item.id);
+  if (silent) {
+    heardFailedIds.add(item.id);
+    return;
+  }
+  if (!heardFailedIds.has(item.id)) {
+    heardFailedIds.add(item.id);
+    window.CinaRipAudio?.error();
+  }
+}
+
+async function runCursedItem(item, gen) {
+  item.status = "loading";
+  item.progress = 8;
+  cursedQueue.currentId = item.id;
+  cursedQueue.current = { id: item.id, title: item.title, phase: "Finding LoadShare link...", percent: 8 };
+  paintCursedQueue();
+  if (!(await cursedWait(760 + Math.floor(Math.random() * 520), gen))) return;
+
+  item.status = "downloading";
+  item.progress = 16;
+  cursedQueue.current = { id: item.id, title: item.title, phase: "Downloading 1080p...", percent: 16 };
+  paintCursedQueue();
+
+  const peak = 74 + Math.floor(Math.random() * 9);
+  while (item.progress < peak) {
+    if (!(await cursedWait(170 + Math.floor(Math.random() * 170), gen))) return;
+    item.progress = Math.min(peak, item.progress + 3 + Math.floor(Math.random() * 5));
+    const phase = item.progress >= 62 && item.progress < 70 ? "Writing to NAS..." : "Downloading 1080p...";
+    cursedQueue.current = { id: item.id, title: item.title, phase, percent: item.progress };
+    paintCursedQueue();
+  }
+
+  if (!(await cursedWait(680 + Math.floor(Math.random() * 460), gen))) return;
+  failCursedItem(item);
+  cursedQueue.currentId = null;
+  cursedQueue.current = null;
+  paintCursedQueue();
+  await cursedWait(240, gen);
+}
+
+async function startCursedQueue() {
+  if (cursedQueue.running || !isPunishedMode()) return;
+  ensureCursedGraveyard();
+  const hope = pickCursedHopeItem();
+  if (!hope) return;
+  cursedQueue.running = true;
+  cursedQueue.gen += 1;
+  const gen = cursedQueue.gen;
+  stopCursedTimers();
+  cursedQueue.active = true;
+  playedQueueFinish = true;
+  paintCursedQueue();
+  await runCursedItem(hope, gen);
+  if (cursedQueue.gen !== gen) return;
+  cursedQueue.running = false;
+  cursedQueue.current = null;
+  cursedQueue.currentId = null;
+  ensureCursedGraveyard();
+  paintCursedQueue();
+}
+
+function stopCursedQueue() {
+  const current = cursedQueue.items.find((item) => item.id === cursedQueue.currentId);
+  cursedQueue.running = false;
+  cursedQueue.gen += 1;
+  stopCursedTimers();
+  if (current && current.status !== "failed") failCursedItem(current);
+  cursedQueue.current = null;
+  cursedQueue.currentId = null;
+  ensureCursedGraveyard();
+  paintCursedQueue();
 }
 
 function queueStatusLabel(item) {
@@ -1439,6 +2460,24 @@ function bindQueueRemove(row, itemId) {
   if (!button || button.dataset.bound === "1") return;
   button.dataset.bound = "1";
   button.addEventListener("click", async () => {
+    if (isPunishedMode() && cursedQueue.syntheticIds.has(itemId)) {
+      cursedQueue.items = cursedQueue.items.filter((item) => item.id !== itemId);
+      cursedQueue.syntheticIds.delete(itemId);
+      cursedQueue.failedIds.delete(itemId);
+      if (cursedQueue.currentId === itemId) {
+        cursedQueue.currentId = null;
+        cursedQueue.current = null;
+        cursedQueue.running = false;
+        cursedQueue.gen += 1;
+        stopCursedTimers();
+      }
+      if (cursedQueue.items.filter((item) => item.status === "failed").length < CURSED_GRAVEYARD_MIN) {
+        ensureCursedGraveyard();
+      }
+      paintCursedQueue();
+      return;
+    }
+    if (cursedQueue.active) return;
     try {
       await postJson("/api/downloads/remove", { id: itemId });
       await refreshJobs();
@@ -1500,7 +2539,12 @@ function fillQueueRow(row, item, snapshot) {
     error.remove();
   }
 
-  const showMeter = item.status === "downloading" || item.status === "loading" || isCurrent;
+  const showMeter =
+    item.status === "downloading" ||
+    item.status === "loading" ||
+    isCurrent ||
+    isPunishedMode() ||
+    (isPunishedMode() && item.status === "failed" && Number(item.progress) > 0);
   let meter = row.querySelector(".queue-item-meter");
   if (showMeter) {
     if (!meter) {
@@ -1512,7 +2556,9 @@ function fillQueueRow(row, item, snapshot) {
       row.appendChild(meter);
     }
     meter.hidden = false;
-    animateMeterFill(meter.querySelector(".queue-item-fill"), queueItemProgress(item, snapshot), { duration: 420 });
+    const fill = meter.querySelector(".queue-item-fill");
+    if (isPunishedMode()) stampCursedFill(fill, cursedBarWidth());
+    else animateMeterFill(fill, queueItemProgress(item, snapshot), { duration: 420 });
   } else if (meter) {
     meter.hidden = true;
   }
@@ -1536,7 +2582,7 @@ function fillQueueRow(row, item, snapshot) {
 
 function renderDownloadQueue(snapshot) {
   const items = snapshot?.items || [];
-  if (downloadQueueSummary) downloadQueueSummary.textContent = formatQueueSummary(snapshot);
+  if (downloadQueueSummary && !isPunishedMode()) downloadQueueSummary.textContent = formatQueueSummary(snapshot);
   if (!downloadQueueList) return;
 
   if (!items.length) {
@@ -1599,13 +2645,16 @@ function renderDownloadQueue(snapshot) {
       easing: "easeOutCubic",
       delay: (_, i) => Math.min(i * 40, 280)
     });
+  } else {
+    startChromeFloat(downloadQueueList);
   }
 }
 
 function updateQueueControls(snapshot) {
   const running = Boolean(snapshot?.running);
   const hasWork = (snapshot?.counts?.pending || 0) > 0 || (snapshot?.counts?.failed || 0) > 0;
-  if (startDownloadQueueButton) startDownloadQueueButton.disabled = running || !hasWork;
+  const cursedCanStart = isPunishedMode() && !running;
+  if (startDownloadQueueButton) startDownloadQueueButton.disabled = running || !(hasWork || cursedCanStart);
   if (stopDownloadQueueButton) stopDownloadQueueButton.hidden = !running;
   if (clearDownloadQueueButton) clearDownloadQueueButton.disabled = running;
   if (downloadQueueSection) downloadQueueSection.classList.toggle("is-running", running);
@@ -1620,6 +2669,22 @@ function renderJobs(data) {
 
   const percent = current?.percent || 0;
   const downloading = Boolean(current && (current.percent > 0 || /download|find|load/i.test(current.phase || "")));
+  if (isPunishedMode()) {
+    if (queueMeter) {
+      queueMeter.hidden = false;
+      queueMeter.classList.add("is-running", "is-active");
+    }
+    jobCard.hidden = false;
+    jobCardVisible = true;
+    if (jobMeter) {
+      jobMeter.classList.add("is-running", "is-active");
+    }
+    if (current || active.length) {
+      jobTitle.textContent = current?.title || active[0]?.title || "Download";
+      jobPhase.textContent = current?.phase || `${active.length} item${active.length === 1 ? "" : "s"} waiting`;
+    }
+    return;
+  }
   if (queueMeter) {
   const showQueueMeter = Boolean(current && percent > 0);
     queueMeter.hidden = !showQueueMeter;
@@ -1650,14 +2715,23 @@ function renderJobs(data) {
 }
 
 async function refreshJobs() {
+  if (!isPunishedMode() && cursedQueue.active) dropCursedQueue();
   const data = await getJson("/api/downloads");
-  const wasRunning = lastQueueRunning;
-  renderJobs(data);
+  realQueueSnapshot = data;
   const items = data.items || [];
   const doneCount = items.filter((item) => item.status === "done").length;
   if (doneCount > lastDoneCount) refreshLibrary().catch(() => {});
   lastDoneCount = doneCount;
 
+  if (isPunishedMode()) {
+    if (!cursedQueue.running) ensureCursedGraveyard();
+    paintCursedQueue();
+    lastQueueRunning = cursedQueue.running;
+    return;
+  }
+
+  const wasRunning = lastQueueRunning;
+  renderJobs(data);
   for (const item of items) {
     if (item.status !== "failed" || heardFailedIds.has(item.id)) continue;
     heardFailedIds.add(item.id);
@@ -1873,7 +2947,7 @@ async function refreshAccount() {
   }
 }
 
-async function refreshLibrary() {
+async function refreshLibrary(options = {}) {
   const [health, lib] = await Promise.all([getJson("/api/health"), getJson("/api/library")]);
   library = lib;
   renderHealthDiag(health);
@@ -1884,22 +2958,26 @@ async function refreshLibrary() {
   }
 
   const frozenCount = (lib.frozen?.movieCount || 0) + (lib.frozen?.showCount || 0);
-  summaryEl.textContent = lib.exists
-    ? `${lib.movieCount} movies · ${lib.showCount} series · ${lib.episodeCount} episodes${
-        frozenCount ? ` · ${frozenCount} in Freezer` : ""
-      }`
-    : "Mounted folder not found. In docker-compose, bind /share/Public/Videos.";
+  if (isPunishedMode()) {
+    startCursedLibraryStats();
+  } else {
+    summaryEl.textContent = lib.exists
+      ? `${lib.movieCount} movies · ${lib.showCount} series · ${lib.episodeCount} episodes${
+          frozenCount ? ` · ${frozenCount} in Freezer` : ""
+        }`
+      : "Mounted folder not found. In docker-compose, bind /share/Public/Videos.";
 
-  if (lib.storage?.ok) {
-    const pct = Math.min(100, lib.storage.usedPercent || 0);
-    setMeterTone(storageMeter, meterTone(pct));
-    animateMeterFill(storageBar, pct);
-    animateCountLabel(storageLabel, pct, "% used");
+    if (lib.storage?.ok) {
+      const pct = Math.min(100, lib.storage.usedPercent || 0);
+      setMeterTone(storageMeter, meterTone(pct));
+      animateMeterFill(storageBar, pct);
+      animateCountLabel(storageLabel, pct, "% used");
+    }
   }
 
-  renderLibrary();
-  renderFreezerPage();
-  route();
+  renderLibrary({ skipMotion: options.skipMotion });
+  renderFreezerPage({ skipMotion: options.skipMotion });
+  if (!options.skipRoute) route();
 }
 
 filterInput.addEventListener("input", () => renderLibrary({ skipMotion: true }));
@@ -1931,6 +3009,7 @@ async function runFreezerOriginal(kind, id) {
 }
 
 libraryList.addEventListener("click", (event) => {
+  if (handleLibraryGridClick(event)) return;
   const freezeButton = event.target.closest("[data-freeze]");
   if (freezeButton) {
     event.preventDefault();
@@ -1956,6 +3035,7 @@ libraryList.addEventListener("click", (event) => {
 
 if (freezerList) {
   freezerList.addEventListener("click", (event) => {
+    if (handleLibraryGridClick(event)) return;
     const restoreButton = event.target.closest("[data-restore]");
     if (restoreButton) {
       event.preventDefault();
@@ -2048,6 +3128,10 @@ catalogTvEpisodeSelect.addEventListener("change", () => {
 });
 
 startDownloadQueueButton.addEventListener("click", async () => {
+  if (isPunishedMode()) {
+    startCursedQueue().catch(() => {});
+    return;
+  }
   try {
     const result = await postJson("/api/downloads/start");
     if (!result.ok) searchStatus.textContent = noteError(result.error || "Could not start the queue.");
@@ -2058,6 +3142,10 @@ startDownloadQueueButton.addEventListener("click", async () => {
 });
 
 stopDownloadQueueButton.addEventListener("click", async () => {
+  if (cursedQueue.running) {
+    stopCursedQueue();
+    return;
+  }
   try {
     await postJson("/api/downloads/stop");
     await refreshJobs();
@@ -2067,6 +3155,10 @@ stopDownloadQueueButton.addEventListener("click", async () => {
 });
 
 clearDownloadQueueButton.addEventListener("click", async () => {
+  if (isPunishedMode()) {
+    refillCursedGraveyard();
+    return;
+  }
   try {
     await postJson("/api/downloads/clear");
     await refreshJobs();
@@ -2148,6 +3240,32 @@ document.getElementById("copy-status-json")?.addEventListener("click", async (ev
 });
 
 document.getElementById("back-library").addEventListener("click", closeShow);
+if (deleteCancel) deleteCancel.addEventListener("click", () => hideDeleteConfirm());
+if (deleteConfirm) deleteConfirm.addEventListener("click", () => confirmDeleteTitle());
+if (deleteVeil) {
+  deleteVeil.addEventListener("click", (event) => {
+    if (event.target === deleteVeil) hideDeleteConfirm();
+  });
+}
+document.addEventListener("click", (event) => {
+  if (!jiggleMode) return;
+  if (pendingDelete || (deleteVeil && !deleteVeil.hidden)) return;
+  if (Date.now() - jiggleEnteredAt < JIGGLE_CLICK_GUARD_MS) return;
+  if (event.target.closest(".library-card, .poster-delete, .library-delete-veil")) return;
+  exitJiggle();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (pendingDelete || (deleteVeil && !deleteVeil.hidden)) {
+    event.preventDefault();
+    hideDeleteConfirm();
+    return;
+  }
+  if (jiggleMode) {
+    event.preventDefault();
+    exitJiggle();
+  }
+});
 window.addEventListener("hashchange", () => {
   route();
   finishCaptchaLogin(recaptchaFromHash());
@@ -2178,6 +3296,7 @@ function bootUiMotion() {
   markMotionReady();
   motionFade(header, { fromY: 10, duration: 460 });
   motionFade(kids, { fromY: 16, duration: 440, delay: (_, i) => 90 + i * 70 });
+  window.setTimeout(() => startChromeFloat(), 720);
   shellMotionDone = true;
 }
 
@@ -2189,6 +3308,24 @@ function wireMotionPress() {
       const hit = event.target.closest("button, .tab, a.ghost");
       if (!hit || hit.closest("video")) return;
       if (hit.closest(".library-card, .catalog-card")) return;
+      if (hit.classList.contains("liquid-idle")) {
+        const state = { s: 0.95 };
+        hit.style.setProperty("--press-s", "0.95");
+        window.anime.remove(state);
+        window.anime({
+          targets: state,
+          s: 1,
+          duration: 180,
+          easing: "easeOutQuad",
+          update() {
+            hit.style.setProperty("--press-s", String(state.s));
+          },
+          complete() {
+            hit.style.setProperty("--press-s", "1");
+          }
+        });
+        return;
+      }
       window.anime.remove(hit);
       window.anime({
         targets: hit,
@@ -2206,88 +3343,235 @@ function wireMotionPress() {
 
 function hideSplashOverlay() {
   if (!splashEl) return;
-  if (typeof window.anime === "function") window.anime.remove(splashEl);
+  if (typeof window.anime === "function") {
+    window.anime.remove(splashEl);
+    const inner = splashEl.querySelector(".splash-inner");
+    if (inner) window.anime.remove(inner);
+  }
   splashEl.hidden = true;
   splashEl.setAttribute("aria-hidden", "true");
   splashEl.setAttribute("aria-busy", "false");
   splashEl.style.pointerEvents = "none";
   splashEl.style.opacity = "0";
+  splashEl.style.visibility = "hidden";
+  const inner = splashEl.querySelector(".splash-inner");
+  if (inner) {
+    inner.style.removeProperty("opacity");
+    inner.style.removeProperty("transform");
+    inner.style.removeProperty("will-change");
+  }
+}
+
+function pinSplashLocked() {
+  return document.documentElement.classList.contains("is-pin-locked");
+}
+
+function splashInner() {
+  return splashEl?.querySelector(".splash-inner") || null;
+}
+
+function forgetSplashDismissed() {
+  splashDismissed = false;
+  try {
+    sessionStorage.removeItem(SPLASH_SESSION_KEY);
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+function afterSplashGone(options = {}) {
+  startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
+  startChromeFloat();
+  if (options.refresh === false) return;
+  refreshLibrary().catch((error) => {
+    showStatus(noteError(error.message || "Could not reach the NAS library."), { error: true, kind: "health" });
+  });
+  refreshJobs().catch(() => {});
+  refreshAccount().catch(() => {});
 }
 
 function suppressSplash() {
+  if (pinSplashLocked()) return;
   rememberSplashDismissed();
   hideSplashOverlay();
 }
 
-function dismissSplash() {
-  if (splashDismissed) return;
+function dismissSplash(options = {}) {
+  if (pinSplashLocked()) return Promise.resolve();
+  if (splashDismissed && splashEl?.hidden) return Promise.resolve();
   rememberSplashDismissed();
-  if (!splashEl || splashEl.hidden) return;
+  siteAuth.loggedIn = true;
+  const refresh = options.refresh !== false;
+  if (!splashEl || splashEl.hidden) {
+    afterSplashGone({ refresh });
+    return Promise.resolve();
+  }
   splashEl.style.pointerEvents = "none";
   splashEl.setAttribute("aria-busy", "false");
+  const inner = splashInner();
   if (!canMotion()) {
     hideSplashOverlay();
-    startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
-    return;
+    afterSplashGone({ refresh });
+    return Promise.resolve();
   }
-  const safety = window.setTimeout(() => {
-    hideSplashOverlay();
-    startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
-  }, 520);
-  window.anime({
-    targets: splashEl,
-    opacity: 0,
-    duration: 420,
-    easing: "easeInCubic",
-    complete() {
+  if (typeof window.anime === "function") {
+    window.anime.remove(splashEl);
+    if (inner) window.anime.remove(inner);
+  }
+  splashEl.style.willChange = "opacity";
+  if (inner) inner.style.willChange = "opacity, transform";
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
       window.clearTimeout(safety);
       hideSplashOverlay();
-      startTileFloat(document.querySelectorAll(".library-card, .catalog-card"));
+      afterSplashGone({ refresh });
+      resolve();
+    };
+    const safety = window.setTimeout(finish, 780);
+    if (inner) {
+      window.anime({
+        targets: inner,
+        opacity: 0,
+        scale: 0.94,
+        translateY: -18,
+        duration: 460,
+        easing: "easeInCubic"
+      });
     }
+    window.anime({
+      targets: splashEl,
+      opacity: 0,
+      duration: 620,
+      easing: "easeInCubic",
+      complete: finish
+    });
   });
 }
 
-function showSplashReady() {
-  if (!splashEl || splashDismissed || splashEl.hidden) return;
+function presentPinSplash(options = {}) {
+  if (!splashEl) return Promise.resolve();
+  forgetSplashDismissed();
+  siteAuth.loggedIn = false;
+  const pinInput = document.getElementById("splash-pin");
+  const pinForm = document.getElementById("splash-pin-form");
+  if (pinForm) pinForm.reset();
+  if (pinInput) {
+    pinInput.value = "";
+    pinInput.classList.remove("has-value");
+  }
+  const authError = document.getElementById("splash-auth-error");
+  if (authError) {
+    authError.textContent = "";
+    authError.hidden = true;
+  }
+  const animate = options.animate === true;
+  const inner = splashInner();
+  if (animate && canMotion()) {
+    splashEl.style.opacity = "0";
+    if (inner) {
+      inner.style.opacity = "0";
+      inner.style.transform = "translateY(22px) scale(0.92)";
+    }
+  }
+  splashEl.hidden = false;
+  splashEl.removeAttribute("aria-hidden");
   splashEl.setAttribute("aria-busy", "false");
-  if (splashLabelEl) splashLabelEl.hidden = true;
-  if (!splashReadyBtn) return;
-  splashReadyBtn.hidden = false;
-  splashReadyBtn.focus();
+  splashEl.style.visibility = "visible";
+  splashEl.style.display = "";
+  splashEl.style.pointerEvents = "auto";
+  if (!animate || !canMotion()) {
+    splashEl.style.opacity = "1";
+    if (inner) {
+      inner.style.removeProperty("opacity");
+      inner.style.removeProperty("transform");
+    }
+    document.getElementById("splash-pin")?.focus();
+    return Promise.resolve();
+  }
+  if (typeof window.anime === "function") {
+    window.anime.remove(splashEl);
+    if (inner) window.anime.remove(inner);
+  }
+  window.anime.set(splashEl, { opacity: 0 });
+  if (inner) window.anime.set(inner, { opacity: 0, scale: 0.92, translateY: 22 });
+  splashEl.style.willChange = "opacity";
+  if (inner) inner.style.willChange = "opacity, transform";
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(safety);
+      splashEl.style.removeProperty("will-change");
+      if (inner) {
+        inner.style.removeProperty("will-change");
+        inner.style.removeProperty("opacity");
+        inner.style.removeProperty("transform");
+      }
+      document.getElementById("splash-pin")?.focus();
+      resolve();
+    };
+    const safety = window.setTimeout(finish, 860);
+    window.anime({
+      targets: splashEl,
+      opacity: 1,
+      duration: 560,
+      easing: "easeOutCubic"
+    });
+    if (!inner) {
+      window.setTimeout(finish, 560);
+      return;
+    }
+    window.anime({
+      targets: inner,
+      opacity: 1,
+      scale: 1,
+      translateY: 0,
+      duration: 680,
+      delay: 40,
+      easing: "easeOutCubic",
+      complete: finish
+    });
+  });
 }
 
 async function bootLibrarySplash() {
-  if (splashDismissedThisSession()) {
-    suppressSplash();
+  try {
+    const session = await getJson("/api/auth/session");
+    siteAuth.loggedIn = Boolean(session?.loggedIn);
+  } catch {
+    siteAuth.loggedIn = false;
   }
+
+  if (!siteAuth.loggedIn) {
+    splashDismissed = false;
+    return;
+  }
+
   const started = performance.now();
   try {
     await refreshLibrary();
   } catch (error) {
     showStatus(noteError(error.message || "Could not reach the NAS library."), { error: true, kind: "health" });
   }
-  if (splashDismissed) {
-    hideSplashOverlay();
+  if (splashDismissed || splashDismissedThisSession()) {
+    suppressSplash();
     return;
   }
   const remain = Math.max(0, SPLASH_MIN_MS - (performance.now() - started));
   if (remain) await new Promise((resolve) => window.setTimeout(resolve, remain));
-  if (splashDismissed) {
-    hideSplashOverlay();
-    return;
-  }
-  showSplashReady();
+  if (pinSplashLocked()) return;
+  dismissSplash({ refresh: false });
 }
 
 window.CinaRipSplash = {
-  suppress: suppressSplash
+  suppress: suppressSplash,
+  enter: dismissSplash,
+  lock: presentPinSplash
 };
-
-if (splashReadyBtn) {
-  splashReadyBtn.addEventListener("click", () => {
-    dismissSplash();
-  });
-}
 
 wireBookmarklets().catch(() => {});
 restoreAccountLabel();
@@ -2302,10 +3586,13 @@ refreshAccount()
   .catch(() => {});
 refreshJobs().catch(() => {});
 
-function pinSplashLocked() {
-  const form = document.getElementById("splash-pin-form");
-  return Boolean(form && !form.hidden);
-}
+new MutationObserver(() => {
+  syncCursedLibraryStats();
+  syncCursedQueue();
+}).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+
+syncCursedLibraryStats();
+syncCursedQueue();
 
 setInterval(() => {
   if (pinSplashLocked()) return;

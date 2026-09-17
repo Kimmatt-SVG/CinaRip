@@ -5,9 +5,10 @@
   const LIBRARY_SRC = "/sounds/librarysfx.mp3";
   const ADD_QUEUE_SRC = "/sounds/add-to-queue.mp3";
   const READY_SRC = "/sounds/ready-to-watch.mp3";
-  const MUSIC_SRC = "/sounds/abyssal-starry-sky-slowed.mp3?v=4";
+  const MUSIC_SRC = "/sounds/abyssal-starry-sky-slowed.mp3?v=5";
 
-  const MUSIC_VOLUME = 0.34;
+  const MUSIC_VOLUME = 0.22;
+  const RITE_MUSIC_VOLUME = 0.34;
   const SELECT_GAIN = 2.8;
   const ERROR_GAIN = 3.0;
   const QUEUE_GAIN = 3.0;
@@ -20,11 +21,23 @@
   const MUSIC_MUTE_KEY = "cinarip.music.muted";
   const AMBIENT_RATE = 0.65;
   const AMBIENT_SCALE = 1.25;
+  const RITE_TRACKS = [
+    "/rite/sounds/suspense-1.mp3?v=1",
+    "/rite/sounds/suspense-2.mp3?v=1",
+    "/rite/sounds/suspense-3.mp3?v=1"
+  ];
+  const RITE_BED_SRC = "/rite/sounds/glitch-hum-loop.mp3?v=1";
+  const RITE_BED_VOLUME = 0.12;
 
   let unlocked = false;
   let videoOpen = false;
   let musicMuted = false;
   let music = null;
+  let riteBed = null;
+  let ritePlaylist = null;
+  let riteMode = false;
+  let riteLastIndex = -1;
+  let riteEndedBound = false;
   let audioCtx = null;
   let fadeToken = 0;
   let lastSelectAt = 0;
@@ -203,15 +216,116 @@
     return music;
   }
 
-  function fadeTo(target, durationMs) {
-    const el = ensureMusic();
-    const token = ++fadeToken;
-    const from = el.volume;
-    const startedAt = performance.now();
-    if (target > 0 && el.paused) {
+  function pickRiteTrack() {
+    const choices = RITE_TRACKS.map((_, index) => index).filter((index) => index !== riteLastIndex);
+    const pool = choices.length ? choices : RITE_TRACKS.map((_, index) => index);
+    const next = pool[Math.floor(Math.random() * pool.length)];
+    riteLastIndex = next;
+    return RITE_TRACKS[next];
+  }
+
+  function playWhenReady(el) {
+    if (!el) return;
+    const tryPlay = () => {
       const play = el.play();
       if (play && typeof play.catch === "function") play.catch(() => {});
+    };
+    tryPlay();
+    if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return;
+    el.addEventListener("canplay", tryPlay, { once: true });
+  }
+
+  function ensureRitePlaylist() {
+    if (ritePlaylist) return ritePlaylist;
+    ritePlaylist = document.getElementById("rite-bgm") || new Audio();
+    ritePlaylist.preload = "auto";
+    ritePlaylist.loop = false;
+    ritePlaylist.playsInline = true;
+    ritePlaylist.volume = 0;
+    bindRiteEnded(ritePlaylist);
+    return ritePlaylist;
+  }
+
+  function ensureRiteBed() {
+    if (riteBed) return riteBed;
+    riteBed = document.getElementById("rite-bed") || new Audio();
+    riteBed.preload = "auto";
+    riteBed.loop = true;
+    riteBed.playsInline = true;
+    riteBed.volume = 0;
+    if (!(riteBed.getAttribute("src") || "").includes("glitch-hum-loop")) {
+      riteBed.src = RITE_BED_SRC;
     }
+    return riteBed;
+  }
+
+  function onRiteTrackEnded() {
+    if (!riteMode) return;
+    const el = ensureRitePlaylist();
+    el.loop = false;
+    el.src = pickRiteTrack();
+    if (musicMuted || videoOpen) return;
+    el.volume = RITE_MUSIC_VOLUME;
+    playWhenReady(el);
+  }
+
+  function bindRiteEnded(el) {
+    if (riteEndedBound || !el) return;
+    el.addEventListener("ended", onRiteTrackEnded);
+    riteEndedBound = true;
+  }
+
+  function primeRiteAudio() {
+    const mix = ensureRitePlaylist();
+    const bed = ensureRiteBed();
+    mix.loop = false;
+    bed.loop = true;
+    if (!(mix.getAttribute("src") || mix.src || "").includes("rite/sounds/suspense")) {
+      mix.src = pickRiteTrack();
+    }
+    if (!(bed.getAttribute("src") || bed.src || "").includes("glitch-hum-loop")) {
+      bed.src = RITE_BED_SRC;
+    }
+    playWhenReady(mix);
+    playWhenReady(bed);
+  }
+
+  function stopRiteAudio() {
+    const mix = ritePlaylist || document.getElementById("rite-bgm");
+    const bed = riteBed || document.getElementById("rite-bed");
+    if (mix) {
+      mix.pause();
+      mix.volume = 0;
+    }
+    if (bed) {
+      bed.pause();
+      bed.volume = 0;
+    }
+  }
+
+  function setRiteMusic(on) {
+    riteMode = Boolean(on);
+    if (riteMode) {
+      primeRiteAudio();
+      return;
+    }
+    stopRiteAudio();
+  }
+
+  function unmutedVolume() {
+    return riteMode ? RITE_MUSIC_VOLUME : MUSIC_VOLUME;
+  }
+
+  function bedTargetFor(musicTarget) {
+    if (!riteMode || musicTarget <= 0.001) return 0;
+    return Math.min(RITE_BED_VOLUME, RITE_BED_VOLUME * (musicTarget / RITE_MUSIC_VOLUME));
+  }
+
+  function fadeElement(el, target, durationMs, token, pauseAtZero) {
+    if (!el) return;
+    const from = el.volume;
+    const startedAt = performance.now();
+    if (target > 0) playWhenReady(el);
     function frame(now) {
       if (token !== fadeToken) return;
       const t = Math.min(1, (now - startedAt) / Math.max(1, durationMs));
@@ -221,17 +335,27 @@
         requestAnimationFrame(frame);
         return;
       }
-      el.volume = target;
-      if (target <= 0.001) {
-        el.volume = 0;
-      }
+      el.volume = target <= 0.001 ? 0 : target;
+      if (pauseAtZero && target <= 0.001) el.pause();
     }
     requestAnimationFrame(frame);
   }
 
+  function fadeTo(target, durationMs) {
+    const token = ++fadeToken;
+    const bgm = ensureMusic();
+    if (riteMode) {
+      fadeElement(bgm, 0, Math.min(durationMs, 400), token, false);
+      fadeElement(ensureRitePlaylist(), target, durationMs, token, true);
+      fadeElement(ensureRiteBed(), bedTargetFor(target), durationMs, token, true);
+      return;
+    }
+    fadeElement(bgm, target, durationMs, token, false);
+  }
+
   function startMusicIfIdle() {
     if (!unlocked || videoOpen || musicMuted) return;
-    fadeTo(MUSIC_VOLUME, FADE_IN_MS);
+    fadeTo(unmutedVolume(), FADE_IN_MS);
   }
 
   function syncMuteButton() {
@@ -244,7 +368,14 @@
     btn.title = label;
     const img = btn.querySelector("img");
     if (img) {
-      img.src = musicMuted ? "/icons/music-off.png" : "/icons/music-on.png";
+      const punished = document.documentElement.classList.contains("is-punished");
+      if (punished) {
+        img.src = musicMuted ? "/rite/icons/music-off.png?v=1" : "/rite/icons/music-on.png?v=1";
+        img.dataset.rite = "1";
+      } else {
+        img.src = musicMuted ? "/icons/music-off.png" : "/icons/music-on.png";
+        delete img.dataset.rite;
+      }
     }
   }
 
@@ -261,7 +392,7 @@
       fadeTo(0, FADE_OUT_MS);
       return;
     }
-    if (!videoOpen) fadeTo(MUSIC_VOLUME, FADE_IN_MS);
+    if (!videoOpen) fadeTo(unmutedVolume(), FADE_IN_MS);
   }
 
   function restoreMute() {
@@ -280,6 +411,7 @@
     getAudioContext();
     preloadSfx();
     if (!videoOpen) setAmbientPlaying(true);
+    if (riteMode) primeRiteAudio();
   }
 
   function playUiSfx(src, key, gainValue) {
@@ -291,7 +423,7 @@
   }
 
   function select() {
-    playUiSfx(SELECT_SRC, "select", SELECT_GAIN);
+    // Select.mp3 is a slate/clapper hit. Never play it — including view switches.
   }
 
   function library() {
@@ -316,12 +448,16 @@
     playSfx(QUEUE_DONE_SRC, "queue", QUEUE_GAIN);
   }
 
-  function isLibraryTabHit(target) {
-    return Boolean(target && target.closest && target.closest("#tab-library"));
+  function isViewTabHit(target) {
+    return Boolean(
+      target &&
+        target.closest &&
+        target.closest(".tabs .tab, #tab-library, #tab-search, #tab-freezer, #tab-settings, #back-library")
+    );
   }
 
   function isReadyToWatchHit(target) {
-    return Boolean(target && target.closest && target.closest("#splash-ready"));
+    return Boolean(target && target.closest && target.closest(".splash-pin-go, #splash-pin-form"));
   }
 
   function isAddToQueueHit(target) {
@@ -350,7 +486,7 @@
     videoOpen = false;
     if (!unlocked) return;
     setAmbientPlaying(true);
-    if (!musicMuted) fadeTo(MUSIC_VOLUME, FADE_IN_MS);
+    if (!musicMuted) fadeTo(unmutedVolume(), FADE_IN_MS);
   }
 
   document.addEventListener(
@@ -359,16 +495,14 @@
       const target = event.target;
       const playHit = target.closest && target.closest("[data-play]");
       const muteHit = target.closest && target.closest("#music-mute");
+      const riteHit = target.closest && target.closest("#punished-gate, #punished-veil");
       unlock();
+      if (riteMode) primeRiteAudio();
+      if (riteHit) return;
       if (target.closest && target.closest("video")) return;
-      if (isLibraryTabHit(target)) {
-        library();
-      } else if (isAddToQueueHit(target)) {
-        addToQueue();
-      } else if (isReadyToWatchHit(target)) {
-        readyToWatch();
-      } else {
-        select();
+      if (!isViewTabHit(target)) {
+        if (isAddToQueueHit(target)) addToQueue();
+        else if (isReadyToWatchHit(target)) readyToWatch();
       }
       if (!videoOpen && !playHit && !muteHit) startMusicIfIdle();
     },
@@ -431,6 +565,13 @@
     queueFinished,
     onVideoOpen,
     onVideoClose,
-    setMusicMuted
+    setMusicMuted,
+    fadeMusic(target, durationMs) {
+      fadeTo(target, durationMs);
+    },
+    setRiteMusic,
+    primeRiteAudio,
+    setAmbientPlaying,
+    refreshMuteIcon: syncMuteButton
   };
 })();

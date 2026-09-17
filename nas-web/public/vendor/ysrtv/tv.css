@@ -1,0 +1,35 @@
+/* ysrtv/tv.css: the screen dressing. scanlines and vignette ride on the
+   ::before and ::after of .ysrtv-crt, so no extra markup is needed. tune
+   them with the custom properties, or swap whole presets with the
+   .ysrtv-lines-N classes. */
+
+.ysrtv-crt{position:relative;}
+.ysrtv-crt::before{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  z-index:var(--ysrtv-layer,5);
+  background:repeating-linear-gradient(to bottom,
+    rgba(0,0,0,0) 0 var(--ysrtv-line-gap,2px),
+    rgba(0,0,0,var(--ysrtv-line-alpha,0.14)) var(--ysrtv-line-gap,2px) var(--ysrtv-line-step,4px));
+}
+.ysrtv-crt::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  z-index:var(--ysrtv-layer,5);
+  background:radial-gradient(ellipse at center,
+    rgba(0,0,0,0) var(--ysrtv-vignette-start,55%),
+    rgba(0,0,0,var(--ysrtv-vignette-alpha,0.5)) 100%);
+}
+
+/* the five scanline densities from the set's eye-doctor card */
+.ysrtv-lines-0{--ysrtv-line-alpha:0;}
+.ysrtv-lines-1{--ysrtv-line-alpha:0.07;}
+.ysrtv-lines-2{--ysrtv-line-alpha:0.14;}
+.ysrtv-lines-3{--ysrtv-line-alpha:0.26;}
+.ysrtv-lines-4{--ysrtv-line-alpha:0.55;--ysrtv-line-gap:3px;--ysrtv-line-step:6px;}
+.ysrtv-no-vignette{--ysrtv-vignette-alpha:0;}
+
+/* green phosphor lettering, like the set's channel number */
+.ysrtv-phosphor{
+  color:var(--ysrtv-phosphor,#45ff9c);
+  text-shadow:0 0 14px var(--ysrtv-phosphor-glow,rgba(69,255,156,0.55)),
+    0 1px 2px rgba(0,0,0,0.5);
+}

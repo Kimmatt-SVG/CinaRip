@@ -9,7 +9,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="stylesheet" href="/vendor/ysrtv/tv.css" />
-    <link rel="stylesheet" href="/styles.css?v=82" />
+    <link rel="stylesheet" href="/styles.css?v=104" />
     <link rel="preload" href="/sounds/abyssal-starry-sky-slowed.mp3?v=5" as="audio" type="audio/mpeg" />
     <script>
       document.documentElement.classList.toggle(
@@ -42,14 +42,11 @@
         <p id="splash-label" class="splash-label">Loading library…</p>
         <form id="splash-pin-form" class="splash-pin-form" hidden>
           <label class="splash-pin-label" for="splash-pin">Enter PIN</label>
-          <input id="splash-pin" class="splash-pin-input" type="password" inputmode="numeric" autocomplete="one-time-code" maxlength="32" placeholder="•••••" aria-label="Library PIN" />
-          <button type="submit" class="splash-ready splash-pin-go" aria-label="Ready to watch">
+          <input id="splash-pin" class="splash-pin-input" type="text" inputmode="numeric" autocomplete="off" name="nas-unlock" maxlength="32" placeholder="" spellcheck="false" autocapitalize="off" aria-label="Library PIN" />
+          <button type="submit" class="splash-ready splash-pin-go" aria-label="Unlock library">
             <img src="/icons/ready-to-watch.png?v=1" width="966" height="251" alt="" draggable="false">
           </button>
         </form>
-        <button type="button" id="splash-ready" class="splash-ready" hidden aria-label="Ready to watch">
-          <img src="/icons/ready-to-watch.png?v=1" width="966" height="251" alt="" draggable="false">
-        </button>
         <p id="splash-auth-error" class="splash-auth-error" hidden></p>
       </div>
     </div>
@@ -89,7 +86,7 @@
     <section class="meter-card glow-card" id="job-card" hidden>
       <div class="meter-head">
         <span id="job-title">Download</span>
-        <span id="job-label">—</span>
+        <span id="job-label" data-cursed-keep>—</span>
       </div>
       <div class="plasma-meter is-active" id="job-meter">
         <div class="plasma-meter-track">
@@ -105,7 +102,7 @@
       <section class="meter-card glow-card" id="storage-card">
         <div class="meter-head">
           <span>Public / Videos</span>
-          <span id="storage-label">—</span>
+          <span id="storage-label" data-cursed-keep>—</span>
         </div>
         <div class="plasma-meter" id="storage-meter">
           <div class="plasma-meter-track">
@@ -113,7 +110,7 @@
             <span class="plasma-meter-sheen" aria-hidden="true"></span>
           </div>
         </div>
-        <p id="library-summary" class="muted">Scanning library…</p>
+        <p id="library-summary" class="muted" data-cursed-keep>Scanning library…</p>
       </section>
       <div id="library-list"></div>
     </main>
@@ -165,7 +162,7 @@
       <section id="download-queue-section" class="meter-card glow-card download-queue-section" aria-label="Download queue">
         <div class="meter-head">
           <span>Download queue</span>
-          <span id="download-queue-summary" class="download-queue-summary">0 items queued</span>
+          <span id="download-queue-summary" class="download-queue-summary" data-cursed-keep>0 items queued</span>
         </div>
         <div class="plasma-meter" id="queue-meter" hidden>
           <div class="plasma-meter-track">
@@ -289,6 +286,15 @@
     </dialog>
 
     <p id="status" class="status-banner" hidden role="status"></p>
+    <div id="library-delete-veil" class="library-delete-veil" hidden>
+      <div class="library-delete-card glow-card" role="alertdialog" aria-modal="true" aria-labelledby="library-delete-copy">
+        <p id="library-delete-copy">Delete this title from the library?</p>
+        <div class="library-delete-actions">
+          <button type="button" id="library-delete-cancel" class="ghost">Cancel</button>
+          <button type="button" id="library-delete-confirm" class="ghost danger">Delete</button>
+        </div>
+      </div>
+    </div>
     <div id="punished-veil" class="punished-veil" hidden aria-hidden="true">
       <p id="punished-copy" class="punished-copy">Piracy is a crime... you will be punished</p>
     </div>
@@ -298,9 +304,9 @@
     </div>
     <script src="/vendor/anime.min.js"></script>
     <script src="/vendor/powerglitch.min.js"></script>
-    <script src="/sounds.js?v=28"></script>
-    <script src="/punished.js?v=12"></script>
-    <script src="/app.js?v=51"></script>
-    <script src="/pin-splash.js?v=3"></script>
+    <script src="/sounds.js?v=32"></script>
+    <script src="/punished.js?v=22"></script>
+    <script src="/app.js?v=65"></script>
+    <script src="/pin-splash.js?v=7"></script>
   </body>
 </html>

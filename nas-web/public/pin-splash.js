@@ -4,6 +4,7 @@
   const DEFAULT_TTL_SEC = 30 * 60;
   const SESSION_POLL_MS = 20_000;
   const MAX_TIMEOUT_MS = 2_147_483_647;
+  const SPLASH_SESSION_KEY = "cinarip.splash.dismissed";
 
   let unlocked = false;
   let locking = false;
@@ -14,12 +15,48 @@
     return document.getElementById(id);
   }
 
+  function setLockedClass(locked) {
+    document.documentElement.classList.toggle("is-pin-locked", Boolean(locked));
+  }
+
+  function forgetSplashDismissed() {
+    try {
+      sessionStorage.removeItem(SPLASH_SESSION_KEY);
+    } catch {
+      // ignore quota / private mode
+    }
+  }
+
   function setError(message) {
     const el = $("splash-auth-error");
     if (!el) return;
     const text = String(message || "").trim();
     el.textContent = text;
     el.hidden = !text;
+  }
+
+  function syncPinLook() {
+    const input = $("splash-pin");
+    if (input) input.classList.toggle("has-value", Boolean(input.value));
+  }
+
+  function clearPinField() {
+    const input = $("splash-pin");
+    const form = $("splash-pin-form");
+    if (form) form.reset();
+    if (input) {
+      input.value = "";
+      input.defaultValue = "";
+      input.classList.remove("has-value");
+    }
+    setError("");
+    window.requestAnimationFrame(() => {
+      const again = $("splash-pin");
+      if (again) {
+        again.value = "";
+        again.classList.remove("has-value");
+      }
+    });
   }
 
   function showSplash() {
@@ -34,17 +71,74 @@
     splash.style.display = "";
   }
 
-  function showPin(show) {
+  function showPin(animate) {
     const form = $("splash-pin-form");
-    const ready = $("splash-ready");
     const label = $("splash-label");
+    forgetSplashDismissed();
+    setLockedClass(true);
+    clearPinField();
     if (label) label.hidden = true;
-    if (form) form.hidden = !show;
-    if (ready) ready.hidden = show;
-    if (show) {
-      showSplash();
-      $("splash-pin")?.focus();
+    if (form) form.hidden = false;
+    if (window.CinaRipSplash && typeof window.CinaRipSplash.lock === "function") {
+      return window.CinaRipSplash.lock({ animate: Boolean(animate) });
     }
+    showSplash();
+    $("splash-pin")?.focus();
+    return Promise.resolve();
+  }
+
+  function hidePinForm() {
+    const form = $("splash-pin-form");
+    if (form) form.hidden = true;
+    setLockedClass(false);
+  }
+
+  async function lockNow() {
+    if (locking) return;
+    locking = true;
+    stopWatchdog();
+    unlocked = false;
+    forgetSplashDismissed();
+    try {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+    } catch {
+      // still show the PIN splash
+    }
+    await showPin(true);
+    locking = false;
+  }
+
+  async function submitPin(event) {
+    event.preventDefault();
+    const input = $("splash-pin");
+    const pin = String(input?.value || "");
+    if (!pin) {
+      setError("Enter the PIN.");
+      return;
+    }
+    const result = await readJson("/api/auth/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin })
+    });
+    if (result.data?.ok) {
+      setError("");
+      unlocked = true;
+      setLockedClass(false);
+      if (input) {
+        input.value = "";
+        input.classList.remove("has-value");
+      }
+      startWatchdog(result.data.expiresAt);
+      if (window.CinaRipSplash && typeof window.CinaRipSplash.enter === "function") {
+        await window.CinaRipSplash.enter({ refresh: true });
+      }
+      hidePinForm();
+      return;
+    }
+    if (input) input.value = "";
+    setError(result.data?.error || "Wrong PIN");
+    input?.focus();
   }
 
   function lockDurationLabel(ttlSec) {
@@ -78,19 +172,6 @@
     const res = await fetch(url, { credentials: "same-origin", ...(options || {}) });
     const data = await res.json().catch(() => ({}));
     return { status: res.status, data };
-  }
-
-  async function lockNow() {
-    if (locking) return;
-    locking = true;
-    stopWatchdog();
-    unlocked = false;
-    try {
-      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
-    } catch {
-      // still reload so the splash is the source of truth
-    }
-    location.reload();
   }
 
   function scheduleLock(expiresAt) {
@@ -129,52 +210,22 @@
     }, SESSION_POLL_MS);
   }
 
-  async function submitPin(event) {
-    event.preventDefault();
-    const input = $("splash-pin");
-    const pin = String(input?.value || "");
-    if (!pin) {
-      setError("Enter the PIN.");
-      return;
-    }
-    const result = await readJson("/api/auth/pin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin })
-    });
-    if (result.data?.ok) {
-      setError("");
-      unlocked = true;
-      startWatchdog(result.data.expiresAt);
-      location.assign("/");
-      return;
-    }
-    if (input) input.value = "";
-    setError(result.data?.error || "Wrong PIN");
-    input?.focus();
-  }
-
   function wire() {
     const form = $("splash-pin-form");
-    const ready = $("splash-ready");
+    const lockForm = $("site-logout-form");
     if (form && !form.dataset.pinWired) {
       form.dataset.pinWired = "1";
       form.addEventListener("submit", (event) => {
         submitPin(event).catch(() => setError("Could not reach the lock."));
       });
+      $("splash-pin")?.addEventListener("input", syncPinLook);
     }
-    if (ready && !ready.dataset.pinWired) {
-      ready.dataset.pinWired = "1";
-      ready.addEventListener(
-        "click",
-        (event) => {
-          if (unlocked) return;
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          showPin(true);
-        },
-        true
-      );
+    if (lockForm && !lockForm.dataset.pinWired) {
+      lockForm.dataset.pinWired = "1";
+      lockForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        lockNow().catch(() => {});
+      });
     }
   }
 
@@ -188,13 +239,16 @@
       describeLock(config.data?.ttlSec || session.data?.ttlSec);
       unlocked = Boolean(session.data?.loggedIn);
       if (unlocked) {
-        showPin(false);
+        hidePinForm();
         setError("");
         startWatchdog(session.data?.expiresAt);
+        if (window.CinaRipSplash && typeof window.CinaRipSplash.enter === "function") {
+          window.CinaRipSplash.enter({ refresh: false });
+        }
         return;
       }
       stopWatchdog();
-      showPin(true);
+      showPin(false);
       if (config.status === 404) {
         setError("This app is still running a server without the PIN lock. Restart CinaRip.");
       } else if (!config.data?.configured) {
@@ -203,7 +257,7 @@
         setError("Too many attempts. Try again in a moment.");
       }
     } catch {
-      showPin(true);
+      showPin(false);
       setError("Could not reach the lock.");
     }
   }
