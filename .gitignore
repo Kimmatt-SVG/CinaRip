@@ -51,3 +51,13 @@ output/
 *.aac
 *.mp3
 *.wav
+
+# CinaRip Library UI ambient video and sound
+!nas-web/public/media/
+!nas-web/public/media/**
+!nas-web/public/sounds/
+!nas-web/public/sounds/**
+
+# Local Chrome TLS binaries (downloaded on the laptop, not for the NAS image)
+nas-web/curl-bin/*
+!nas-web/curl-bin/.gitkeep

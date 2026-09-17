@@ -24,6 +24,7 @@ function hideStatus() {
 const summaryEl = document.getElementById("library-summary");
 const storageLabel = document.getElementById("storage-label");
 const storageBar = document.getElementById("storage-bar");
+const storageMeter = document.getElementById("storage-meter");
 const libraryList = document.getElementById("library-list");
 const filterInput = document.getElementById("filter");
 const viewLibrary = document.getElementById("view-library");
@@ -60,6 +61,7 @@ const jobCard = document.getElementById("job-card");
 const jobTitle = document.getElementById("job-title");
 const jobLabel = document.getElementById("job-label");
 const jobBar = document.getElementById("job-bar");
+const jobMeter = document.getElementById("job-meter");
 const jobPhase = document.getElementById("job-phase");
 const catalogResultsHead = document.getElementById("catalog-results-head");
 const catalogResultsSummary = document.getElementById("catalog-results-summary");
@@ -76,6 +78,9 @@ const catalogTvEpisodeList = document.getElementById("catalog-tv-episode-list");
 const catalogAddQueue = document.getElementById("catalog-add-queue");
 const downloadQueueSummary = document.getElementById("download-queue-summary");
 const downloadQueueList = document.getElementById("download-queue-list");
+const downloadQueueSection = document.getElementById("download-queue-section");
+const queueMeter = document.getElementById("queue-meter");
+const queueBar = document.getElementById("queue-bar");
 const startDownloadQueueButton = document.getElementById("start-download-queue");
 const stopDownloadQueueButton = document.getElementById("stop-download-queue");
 const clearDownloadQueueButton = document.getElementById("clear-download-queue");
@@ -158,6 +163,83 @@ function motionFade(targets, options = {}) {
   };
   if (options.scaleFrom != null) props.scale = 1;
   window.anime(props);
+}
+
+const meterStates = new WeakMap();
+
+function meterTone(percent) {
+  if (percent >= 92) return "critical";
+  if (percent >= 78) return "warn";
+  return "";
+}
+
+function setMeterTone(meter, tone) {
+  if (!meter) return;
+  meter.classList.toggle("is-warn", tone === "warn");
+  meter.classList.toggle("is-critical", tone === "critical");
+}
+
+function animateMeterFill(fill, percent, options = {}) {
+  if (!fill) return;
+  const next = Math.max(0, Math.min(100, Number(percent) || 0));
+  let state = meterStates.get(fill);
+  if (!state) {
+    state = { value: next };
+    meterStates.set(fill, state);
+  }
+  const prev = state.value;
+  if (Math.abs(prev - next) < 0.4 && fill.style.width) {
+    fill.style.width = `${next}%`;
+    state.value = next;
+    return;
+  }
+  if (!canMotion() || options.immediate) {
+    if (typeof window.anime === "function") window.anime.remove(state);
+    state.value = next;
+    fill.style.width = `${next}%`;
+    return;
+  }
+  window.anime.remove(state);
+  window.anime({
+    targets: state,
+    value: next,
+    duration: options.duration ?? 720,
+    easing: options.easing || "easeOutCubic",
+    update() {
+      fill.style.width = `${state.value.toFixed(2)}%`;
+    },
+    complete() {
+      state.value = next;
+      fill.style.width = `${next}%`;
+    }
+  });
+}
+
+function animateCountLabel(el, nextValue, suffix) {
+  if (!el) return;
+  const next = Math.max(0, Number(nextValue) || 0);
+  const key = "_count";
+  const state = el[key] || { value: next };
+  el[key] = state;
+  const render = (value) => {
+    el.textContent = `${Math.round(value)}${suffix || ""}`;
+  };
+  if (!canMotion() || Math.abs(state.value - next) < 0.5) {
+    state.value = next;
+    render(next);
+    return;
+  }
+  window.anime.remove(state);
+  window.anime({
+    targets: state,
+    value: next,
+    round: 1,
+    duration: 640,
+    easing: "easeOutCubic",
+    update() {
+      render(state.value);
+    }
+  });
 }
 
 function motionStagger(nodes, options = {}) {
@@ -1316,13 +1398,121 @@ function formatQueueSummary(snapshot) {
   return "0 items queued";
 }
 
+function queueItemProgress(item, snapshot) {
+  if (item?.status === "done") return 100;
+  if (snapshot?.current?.id === item?.id && snapshot.current?.percent != null) {
+    return Number(snapshot.current.percent) || 0;
+  }
+  return Number(item?.progress) || 0;
+}
+
+function bindQueueRemove(row, itemId) {
+  const button = row.querySelector(".download-queue-remove");
+  if (!button || button.dataset.bound === "1") return;
+  button.dataset.bound = "1";
+  button.addEventListener("click", async () => {
+    try {
+      await postJson("/api/downloads/remove", { id: itemId });
+      await refreshJobs();
+    } catch (error) {
+      searchStatus.textContent = noteError(error.message || "Could not remove item.");
+    }
+  });
+}
+
+function fillQueueRow(row, item, snapshot) {
+  const isCurrent = Boolean(snapshot?.running && item.id === snapshot.currentId);
+  const kind = item.kind === "episode" ? "episode" : "movie";
+  row.dataset.queueId = item.id;
+  row.className = `download-queue-item status-${item.status} kind-${kind}${isCurrent ? " current" : ""}`;
+
+  let title = row.querySelector(".download-queue-item-title");
+  if (!title) {
+    title = document.createElement("span");
+    title.className = "download-queue-item-title";
+    row.appendChild(title);
+  }
+  title.textContent = item.title;
+  title.title = item.movieUrl || "";
+
+  let badge = row.querySelector(".download-queue-item-status");
+  let meta = row.querySelector(".download-queue-item-meta");
+  let rowMeta = row.querySelector(".download-queue-item-row");
+  if (!rowMeta) {
+    rowMeta = document.createElement("div");
+    rowMeta.className = "download-queue-item-row";
+    row.appendChild(rowMeta);
+  }
+  if (!badge) {
+    badge = document.createElement("span");
+    badge.className = "download-queue-item-status";
+    rowMeta.appendChild(badge);
+  } else if (badge.parentElement !== rowMeta) {
+    rowMeta.appendChild(badge);
+  }
+  badge.textContent = queueStatusLabel(item);
+  if (!meta) {
+    meta = document.createElement("span");
+    meta.className = "download-queue-item-meta";
+    rowMeta.appendChild(meta);
+  } else if (meta.parentElement !== rowMeta) {
+    rowMeta.appendChild(meta);
+  }
+  meta.textContent = `${item.kind === "episode" ? "TV" : "Movie"} · NAS`;
+
+  let error = row.querySelector(".download-queue-item-error");
+  if (item.status === "failed" && item.error) {
+    if (!error) {
+      error = document.createElement("span");
+      error.className = "download-queue-item-error";
+      row.appendChild(error);
+    }
+    error.textContent = item.error;
+  } else if (error) {
+    error.remove();
+  }
+
+  const showMeter = item.status === "downloading" || item.status === "loading" || isCurrent;
+  let meter = row.querySelector(".queue-item-meter");
+  if (showMeter) {
+    if (!meter) {
+      meter = document.createElement("div");
+      meter.className = "queue-item-meter";
+      const fill = document.createElement("i");
+      fill.className = "queue-item-fill";
+      meter.appendChild(fill);
+      row.appendChild(meter);
+    }
+    meter.hidden = false;
+    animateMeterFill(meter.querySelector(".queue-item-fill"), queueItemProgress(item, snapshot), { duration: 420 });
+  } else if (meter) {
+    meter.hidden = true;
+  }
+
+  const canRemove = !isCurrent && item.status !== "downloading" && item.status !== "loading";
+  let removeButton = row.querySelector(".download-queue-remove");
+  if (canRemove) {
+    if (!removeButton) {
+      removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "download-queue-remove";
+      removeButton.textContent = "×";
+      removeButton.title = "Remove from queue";
+      row.appendChild(removeButton);
+    }
+    bindQueueRemove(row, item.id);
+  } else if (removeButton) {
+    removeButton.remove();
+  }
+}
+
 function renderDownloadQueue(snapshot) {
   const items = snapshot?.items || [];
   if (downloadQueueSummary) downloadQueueSummary.textContent = formatQueueSummary(snapshot);
   if (!downloadQueueList) return;
-  downloadQueueList.innerHTML = "";
 
   if (!items.length) {
+    downloadQueueList.innerHTML = "";
     const empty = document.createElement("li");
     empty.className = "download-queue-empty";
     empty.textContent = "Add titles, then click Download. Files are saved to the NAS.";
@@ -1331,63 +1521,55 @@ function renderDownloadQueue(snapshot) {
     return;
   }
 
+  const empty = downloadQueueList.querySelector(".download-queue-empty");
+  if (empty) empty.remove();
+
+  const existing = new Map(
+    Array.from(downloadQueueList.querySelectorAll("[data-queue-id]")).map((row) => [row.dataset.queueId, row])
+  );
+  const nextIds = new Set(items.map((item) => item.id));
   const freshRows = [];
+
   for (const item of items) {
-    const row = document.createElement("li");
-    row.className = `download-queue-item status-${item.status} kind-${item.kind === "episode" ? "episode" : "movie"}`;
-    if (item.id === snapshot.currentId) row.classList.add("current");
-
-    const title = document.createElement("span");
-    title.className = "download-queue-item-title";
-    title.textContent = item.title;
-    title.title = item.movieUrl;
-
-    const badge = document.createElement("span");
-    badge.className = "download-queue-item-status";
-    badge.textContent = queueStatusLabel(item);
-
-    const meta = document.createElement("span");
-    meta.className = "download-queue-item-meta";
-    meta.textContent = `${item.kind === "episode" ? "TV" : "Movie"} · NAS`;
-
-    row.append(title, badge, meta);
-
-    if (item.status === "failed" && item.error) {
-      const error = document.createElement("span");
-      error.className = "download-queue-item-error";
-      error.textContent = item.error;
-      row.appendChild(error);
+    let row = existing.get(item.id);
+    const isNew = !row;
+    if (!row) {
+      row = document.createElement("li");
+      downloadQueueList.appendChild(row);
+      freshRows.push(row);
     }
-
-    const isCurrent = snapshot.running && item.id === snapshot.currentId;
-    if (!isCurrent && item.status !== "downloading" && item.status !== "loading") {
-      const removeButton = document.createElement("button");
-      removeButton.type = "button";
-      removeButton.className = "download-queue-remove";
-      removeButton.textContent = "×";
-      removeButton.title = "Remove from queue";
-      removeButton.addEventListener("click", async () => {
-        try {
-          await postJson("/api/downloads/remove", { id: item.id });
-          await refreshJobs();
-        } catch (error) {
-          searchStatus.textContent = noteError(error.message || "Could not remove item.");
-        }
-      });
-      row.appendChild(removeButton);
-    }
-
-    if (!seenQueueIds.has(item.id)) freshRows.push(row);
+    fillQueueRow(row, item, snapshot);
     downloadQueueList.appendChild(row);
+  }
+
+  for (const [id, row] of existing) {
+    if (nextIds.has(id)) continue;
+    if (!canMotion()) {
+      row.remove();
+      continue;
+    }
+    window.anime.remove(row);
+    window.anime({
+      targets: row,
+      opacity: 0,
+      translateX: 16,
+      duration: 220,
+      easing: "easeInCubic",
+      complete() {
+        row.remove();
+      }
+    });
   }
 
   seenQueueIds.clear();
   for (const item of items) seenQueueIds.add(item.id);
   if (freshRows.length) {
     motionFade(freshRows, {
-      fromY: 10,
-      duration: 320,
-      delay: (_, i) => Math.min(i * 30, 240)
+      fromY: 12,
+      scaleFrom: 0.98,
+      duration: 380,
+      easing: "easeOutCubic",
+      delay: (_, i) => Math.min(i * 40, 280)
     });
   }
 }
@@ -1398,6 +1580,7 @@ function updateQueueControls(snapshot) {
   if (startDownloadQueueButton) startDownloadQueueButton.disabled = running || !hasWork;
   if (stopDownloadQueueButton) stopDownloadQueueButton.hidden = !running;
   if (clearDownloadQueueButton) clearDownloadQueueButton.disabled = running;
+  if (downloadQueueSection) downloadQueueSection.classList.toggle("is-running", running);
 }
 
 function renderJobs(data) {
@@ -1407,6 +1590,16 @@ function renderJobs(data) {
   renderDownloadQueue(data);
   updateQueueControls(data);
 
+  const percent = current?.percent || 0;
+  const downloading = Boolean(current && (current.percent > 0 || /download|find|load/i.test(current.phase || "")));
+  if (queueMeter) {
+  const showQueueMeter = Boolean(current && percent > 0);
+    queueMeter.hidden = !showQueueMeter;
+    queueMeter.classList.toggle("is-running", downloading);
+    queueMeter.classList.toggle("is-active", downloading);
+    if (showQueueMeter) animateMeterFill(queueBar, percent);
+  }
+
   if (!current && !active.length) {
     jobCard.hidden = true;
     if (jobCardVisible) clearMotionStyles(jobCard);
@@ -1415,13 +1608,16 @@ function renderJobs(data) {
   }
 
   const appearing = !jobCardVisible;
-  const percent = current?.percent || 0;
   jobCard.hidden = false;
   jobCardVisible = true;
   jobTitle.textContent = current?.title || active[0]?.title || "Download";
   jobLabel.textContent = current ? `${percent}%` : `${active.length} queued`;
-  jobBar.style.width = `${percent}%`;
   jobPhase.textContent = current?.phase || `${active.length} item${active.length === 1 ? "" : "s"} waiting`;
+  if (jobMeter) {
+    jobMeter.classList.toggle("is-running", Boolean(current));
+    jobMeter.classList.toggle("is-active", true);
+  }
+  animateMeterFill(jobBar, percent, { duration: 480 });
   if (appearing) motionFade(jobCard, { fromY: 10, duration: 360 });
 }
 
@@ -1495,13 +1691,15 @@ function renderSessionDiag(data) {
       ["hasIdentity", "—"],
       ["evidence", "—"],
       ["error", "—"],
-      ["chromeTls", "—"]
+      ["chromeTls", "—"],
+      ["tornadoIp", "—"]
     ]);
     return;
   }
   if (sessionLabel) {
-    if (data.loggedIn === true) sessionLabel.textContent = signedInLabel(data);
-    else if (data.loggedIn === false) sessionLabel.textContent = "Not signed in";
+    if (data.confirmed && data.loggedIn === true) sessionLabel.textContent = signedInLabel(data);
+    else if (data.confirmed && data.loggedIn === false) sessionLabel.textContent = "Not signed in";
+    else if (data.evidence === "probe-failed") sessionLabel.textContent = "Unreachable";
     else sessionLabel.textContent = "Unconfirmed";
   }
   renderDiagList(sessionDiag, [
@@ -1510,7 +1708,8 @@ function renderSessionDiag(data) {
     ["hasIdentity", diagBool(data.hasIdentity)],
     ["evidence", data.evidence || "—"],
     ["error", data.error || "—"],
-    ["chromeTls", diagBool(data.chromeTls)]
+    ["chromeTls", diagBool(data.chromeTls)],
+    ["tornadoIp", data.tornadoIp || "—"]
   ]);
 }
 
@@ -1589,16 +1788,20 @@ function restoreAccountLabel() {
 async function refreshAccount() {
   try {
     const data = await getJson("/api/tornado/status");
-    if (data.loggedIn === true) {
+    if (data.confirmed && data.loggedIn === true) {
       if (accountLabel) accountLabel.textContent = signedInLabel(data);
       persistAccountState(data);
       setAccountError("");
-    } else if (data.loggedIn === false && data.ok !== false && data.confirmed !== false) {
+    } else if (data.confirmed && data.loggedIn === false) {
       if (accountLabel) accountLabel.textContent = "Not signed in";
       persistAccountState(data);
       setAccountError("");
     } else {
-      if (data.lastKnownLoggedIn || data.hasIdentity || data.hasCookies) {
+      if (data.chromeTls === false) {
+        if (accountLabel) accountLabel.textContent = "Chrome TLS missing";
+      } else if (data.evidence === "probe-failed") {
+        if (accountLabel) accountLabel.textContent = "Tornado unreachable";
+      } else if (data.lastKnownLoggedIn || data.hasIdentity || data.hasCookies) {
         if (accountLabel && !/^Signed in/i.test(accountLabel.textContent || "")) {
           accountLabel.textContent = data.lastKnownLoggedIn ? signedInLabel(data) : "Restoring session…";
         }
@@ -1649,8 +1852,9 @@ async function refreshLibrary() {
 
   if (lib.storage?.ok) {
     const pct = Math.min(100, lib.storage.usedPercent || 0);
-    storageBar.style.width = `${pct}%`;
-    storageLabel.textContent = `${pct.toFixed(0)}% used`;
+    setMeterTone(storageMeter, meterTone(pct));
+    animateMeterFill(storageBar, pct);
+    animateCountLabel(storageLabel, pct, "% used");
   }
 
   renderLibrary();

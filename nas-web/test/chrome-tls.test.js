@@ -79,6 +79,15 @@ describe("Chrome TLS binary lookup", () => {
     }
   });
 
+  it("searches nas-web/curl-bin next to the server by default", () => {
+    const bin = findImpersonateBin({
+      env: {},
+      isFile: (file) => /curl-bin[\\/]+curl-impersonate$/i.test(file),
+      readDir: () => []
+    });
+    assert.match(bin, /curl-bin[\\/]+curl-impersonate$/i);
+  });
+
   it("explains the empty curl-bin overlay in the missing-binary message", () => {
     assert.match(missingTlsMessage(), /curl-bin/);
     assert.match(missingTlsMessage(), /docker compose up -d --build/);

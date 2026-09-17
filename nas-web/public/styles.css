@@ -38,6 +38,25 @@ body {
   background: #05050d;
 }
 
+.ambient::before {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  background:
+    radial-gradient(ellipse 42% 36% at 18% 28%, rgba(10, 132, 255, 0.42), transparent 62%),
+    radial-gradient(ellipse 48% 40% at 82% 22%, rgba(191, 90, 242, 0.36), transparent 58%),
+    radial-gradient(ellipse 38% 44% at 58% 78%, rgba(48, 209, 88, 0.08), transparent 64%),
+    radial-gradient(ellipse 70% 55% at 50% 50%, rgba(18, 28, 72, 0.55), rgba(5, 5, 13, 0.92) 72%);
+  filter: blur(28px) saturate(1.45);
+  transform: scale(1.12);
+  animation: ambient-drift 28s ease-in-out infinite alternate;
+}
+
+@keyframes ambient-drift {
+  from { transform: scale(1.08) translate(-3%, -2%); }
+  to { transform: scale(1.22) translate(4%, 3%); }
+}
+
 body > :not(.ambient) {
   position: relative;
   z-index: 1;
@@ -119,6 +138,11 @@ button.splash-ready img {
   transform: scale(1.25);
   transform-origin: center center;
   filter: blur(12px) saturate(1.5) brightness(0.84);
+  opacity: 0;
+}
+
+.ambient-video.is-playing {
+  opacity: 1;
 }
 
 .ambient-diffusion {
@@ -450,6 +474,35 @@ a.ghost {
   -webkit-backdrop-filter: blur(14px);
 }
 
+.glow-card {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    linear-gradient(180deg, rgba(22, 28, 58, 0.42), rgba(8, 10, 22, 0.58)),
+    rgba(10, 12, 24, 0.52);
+  box-shadow:
+    0 0 0 1px rgba(10, 132, 255, 0.1),
+    0 18px 42px rgba(0, 0, 0, 0.32);
+}
+
+.glow-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 70% at 0% 0%, rgba(10, 132, 255, 0.16), transparent 52%),
+    radial-gradient(ellipse 70% 60% at 100% 0%, rgba(191, 90, 242, 0.12), transparent 48%);
+  opacity: 0.9;
+  z-index: 0;
+}
+
+.glow-card > * {
+  position: relative;
+  z-index: 1;
+}
+
 .meter-head, .card-head {
   display: flex;
   justify-content: space-between;
@@ -478,19 +531,105 @@ a.ghost {
   word-break: break-word;
 }
 
-.meter {
-  height: 8px;
-  margin: 10px 0;
+.meter,
+.plasma-meter {
+  margin: 12px 0 8px;
+}
+
+.plasma-meter[hidden] {
+  display: none;
+}
+
+.plasma-meter-track {
+  position: relative;
+  height: 12px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
+    rgba(0, 0, 0, 0.38);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 1px 8px rgba(0, 0, 0, 0.45);
+}
+
+.plasma-meter-track::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent 11px,
+    rgba(255, 255, 255, 0.05) 11px,
+    rgba(255, 255, 255, 0.05) 12px
+  );
+  mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+}
+
+.plasma-meter-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  position: relative;
+  z-index: 1;
+  transform-origin: left center;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent 46%),
+    linear-gradient(90deg, #0a84ff 0%, #64d2ff 42%, #bf5af2 100%);
+  box-shadow:
+    0 0 16px rgba(10, 132, 255, 0.45),
+    0 0 28px rgba(191, 90, 242, 0.22);
+}
+
+.plasma-meter.is-warn .plasma-meter-fill {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 46%),
+    linear-gradient(90deg, #0a84ff, #bf5af2 55%, #ff9f0a);
+  box-shadow: 0 0 16px rgba(255, 159, 10, 0.35);
+}
+
+.plasma-meter.is-critical .plasma-meter-fill {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22), transparent 46%),
+    linear-gradient(90deg, #bf5af2, #ff453a);
+  box-shadow: 0 0 16px rgba(255, 69, 58, 0.4);
+}
+
+.plasma-meter.is-active .plasma-meter-fill {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.32), transparent 42%),
+    linear-gradient(90deg, #30d158 0%, #0a84ff 48%, #bf5af2 100%);
+}
+
+.plasma-meter-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.28) 48%, transparent 72%);
+  transform: translateX(-120%);
+  opacity: 0;
+}
+
+html.motion-on .plasma-meter.is-active .plasma-meter-sheen,
+html.motion-on .plasma-meter.is-running .plasma-meter-sheen {
+  opacity: 1;
+  animation: plasma-sheen 2.4s ease-in-out infinite;
+}
+
+@keyframes plasma-sheen {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(130%); }
 }
 
 .meter i {
   display: block;
   height: 100%;
   width: 0;
-  background: linear-gradient(90deg, var(--blue), var(--purple));
 }
 
 .muted { color: var(--muted); font-size: 13px; line-height: 1.45; }
@@ -973,9 +1112,10 @@ a.ghost {
 }
 
 .ghost.primary-action {
-  background: var(--blue);
+  background: linear-gradient(90deg, #0a84ff, #5e5ce6);
   border-color: transparent;
   color: #fff;
+  box-shadow: 0 8px 22px rgba(10, 132, 255, 0.28);
 }
 
 .ghost.danger {
@@ -983,35 +1123,74 @@ a.ghost {
   color: #ff8a80;
 }
 
+.download-queue-section.is-running {
+  box-shadow:
+    0 0 0 1px rgba(10, 132, 255, 0.22),
+    0 18px 42px rgba(10, 132, 255, 0.12);
+}
+
 .download-queue-list {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .download-queue-empty {
   color: var(--faint);
   font-size: 13px;
-  padding: 8px 2px;
+  padding: 22px 14px;
+  text-align: center;
+  border-radius: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .download-queue-item {
   display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 4px 8px;
+  grid-template-columns: 1fr auto;
+  gap: 6px 10px;
   align-items: center;
-  padding: 9px 28px 9px 12px;
-  margin-bottom: 6px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
+  padding: 12px 36px 12px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--border);
   font-size: 12px;
   position: relative;
+  overflow: hidden;
 }
 
+.download-queue-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.download-queue-item.kind-movie::before { background: #64d2ff; }
+.download-queue-item.kind-episode::before { background: #ff9f0a; }
+.download-queue-item.status-done::before { background: var(--green); }
+.download-queue-item.status-failed::before { background: #ff8a80; }
+
 .download-queue-item.current {
-  background: rgba(10, 132, 255, 0.12);
-  border-color: rgba(10, 132, 255, 0.35);
+  background: linear-gradient(90deg, rgba(10, 132, 255, 0.16), rgba(191, 90, 242, 0.08));
+  border-color: rgba(10, 132, 255, 0.42);
+  box-shadow: 0 0 24px rgba(10, 132, 255, 0.16);
+}
+
+html.motion-on .download-queue-item.current {
+  animation: queue-current-breathe 2.8s ease-in-out infinite;
+}
+
+@keyframes queue-current-breathe {
+  0%, 100% { box-shadow: 0 0 16px rgba(10, 132, 255, 0.12); }
+  50% { box-shadow: 0 0 28px rgba(191, 90, 242, 0.22); }
 }
 
 .download-queue-item-title {
@@ -1020,23 +1199,44 @@ a.ghost {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  padding-left: 8px;
+}
+
+.download-queue-item-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-left: 8px;
 }
 
 .download-queue-item-status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 99px;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--faint);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .download-queue-item.status-loading .download-queue-item-status,
 .download-queue-item.status-downloading .download-queue-item-status {
-  color: #64d2ff;
+  color: #c2e8ff;
+  background: rgba(10, 132, 255, 0.22);
 }
 
-.download-queue-item.status-done .download-queue-item-status { color: var(--green); }
-.download-queue-item.status-failed .download-queue-item-status { color: #ff8a80; }
+.download-queue-item.status-done .download-queue-item-status {
+  color: #d4ffdf;
+  background: rgba(48, 209, 88, 0.2);
+}
+.download-queue-item.status-failed .download-queue-item-status {
+  color: #ffd4d0;
+  background: rgba(255, 69, 58, 0.2);
+}
 
 .download-queue-item.kind-movie .download-queue-item-meta { color: #64d2ff; }
 .download-queue-item.kind-episode .download-queue-item-meta { color: #ff9f0a; }
@@ -1044,6 +1244,7 @@ a.ghost {
 .download-queue-item-meta {
   font-size: 11px;
   color: var(--faint);
+  justify-self: end;
 }
 
 .download-queue-item-error {
@@ -1051,11 +1252,34 @@ a.ghost {
   color: #ff8a80;
   font-size: 11px;
   line-height: 1.35;
+  padding-left: 8px;
+}
+
+.queue-item-meter {
+  grid-column: 1 / -1;
+  height: 6px;
+  margin: 2px 0 0 8px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.queue-item-meter[hidden] {
+  display: none;
+}
+
+.queue-item-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0a84ff, #bf5af2);
+  box-shadow: 0 0 10px rgba(10, 132, 255, 0.45);
 }
 
 .download-queue-remove {
   position: absolute;
-  top: 6px;
+  top: 8px;
   right: 8px;
   border: 0;
   background: transparent;
@@ -1063,6 +1287,13 @@ a.ghost {
   cursor: pointer;
   font-size: 16px;
   line-height: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.motion-on .plasma-meter-sheen,
+  html.motion-on .download-queue-item.current {
+    animation: none;
+  }
 }
 
 dialog {

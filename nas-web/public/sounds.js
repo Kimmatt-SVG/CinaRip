@@ -36,6 +36,11 @@
     return document.getElementById("ambient-video");
   }
 
+  function markAmbientPlaying(el, playing) {
+    if (!el) return;
+    el.classList.toggle("is-playing", Boolean(playing));
+  }
+
   function applyAmbientRate(el) {
     if (!el) return;
     el.loop = true;
@@ -89,7 +94,10 @@
     if (shouldPlay) {
       const play = el.play();
       if (play && typeof play.then === "function") {
-        play.then(() => applyAmbientRate(el)).catch(() => {});
+        play.then(() => {
+          applyAmbientRate(el);
+          markAmbientPlaying(el, true);
+        }).catch(() => markAmbientPlaying(el, false));
       }
       applyAmbientRate(el);
       return;
@@ -388,11 +396,21 @@
       layoutAmbientVideo();
     };
     ambientEl.addEventListener("play", syncAmbient);
-    ambientEl.addEventListener("playing", syncAmbient);
+    ambientEl.addEventListener("playing", () => {
+      syncAmbient();
+      markAmbientPlaying(ambientEl, true);
+    });
     ambientEl.addEventListener("loadedmetadata", syncAmbient);
     ambientEl.addEventListener("canplay", () => {
       syncAmbient();
       if (!videoOpen) setAmbientPlaying(true);
+    });
+    ambientEl.addEventListener("error", () => markAmbientPlaying(ambientEl, false));
+    ambientEl.addEventListener("emptied", () => markAmbientPlaying(ambientEl, false));
+    ambientEl.addEventListener("stalled", () => {
+      if (ambientEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        markAmbientPlaying(ambientEl, false);
+      }
     });
   }
   window.addEventListener("resize", scheduleAmbientLayout);

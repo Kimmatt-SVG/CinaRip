@@ -118,6 +118,18 @@ describe("LoadShare IP family", () => {
     assert.equal(prefersIpv6("https://loadshare.org/download/x"), false);
   });
 
+  it("uses IPv6 for Tornado when TORNADO_IP=auto", () => {
+    const prev = process.env.TORNADO_IP;
+    process.env.TORNADO_IP = "auto";
+    try {
+      assert.equal(shouldForceIpv4("https://www4.tornadomovies.co/tornado-1"), false);
+      assert.equal(prefersIpv6("https://www4.tornadomovies.co/tornado-1"), true);
+    } finally {
+      if (prev == null) delete process.env.TORNADO_IP;
+      else process.env.TORNADO_IP = prev;
+    }
+  });
+
   it("uses IPv6 for Tornado when TORNADO_IP=6", () => {
     const prev = process.env.TORNADO_IP;
     process.env.TORNADO_IP = "6";

@@ -220,50 +220,28 @@ function splitHeadersAndBody(raw) {
   };
 }
 
-function runChromeCurl({
-  url,
-  method = "GET",
-  headers = {},
-  body = "",
-  follow = true,
-  cookieJar = "",
-  ipv4
-} = {}) {
-  const bin = impersonateBin();
-  if (!bin) {
-    return Promise.reject(
-      new Error(
-        missingTlsMessage()
-      )
-    );
+function isConnectFail(code, stderr) {
+  return Number(code) === 7 || /failed to connect|couldn't connect to server/i.test(String(stderr || ""));
+}
+
+function isTlsReset(code, stderr) {
+  return Number(code) === 35 || /connection reset by peer/i.test(String(stderr || ""));
+}
+
+function explainCurlError(code, detail, { ipv6 } = {}) {
+  const text = String(detail || "").trim();
+  if (isConnectFail(code, text) && ipv6) {
+    return "This Mac has no working IPv6, so Tornado cannot be reached. This Wi-Fi also resets Tornado IPv4 TLS. Enable IPv6 on Wi-Fi or turn on 1.1.1.1 / WARP, then Refresh session.";
   }
-
-  const callerAccept = pickHeader(headers, "Accept");
-  const args = [...chrome131Args({ accept: callerAccept || undefined })];
-  const forceIpv4 = ipv4 === true || (ipv4 !== false && shouldForceIpv4(url));
-  const forceIpv6 = !forceIpv4 && prefersIpv6(url);
-  if (forceIpv4) args.push("-4");
-  else if (forceIpv6) args.push("-6");
-  args.push("-sS", "--max-time", "45", "-i", "--max-redirs", "8");
-  args.push("-w", `\n${EFFECTIVE_MARK}%{url_effective}`);
-  if (cookieJar) {
-    args.push("-b", cookieJar, "-c", cookieJar);
+  if (isTlsReset(code, text)) {
+    return "Tornado IPv4 TLS was reset by the network. Enable IPv6 or a VPN (1.1.1.1 / WARP), then Refresh session.";
   }
-  if (follow) args.push("-L");
-  if (method && method !== "GET") args.push("-X", method);
+  return `Tornado request failed (exit ${code})${text ? `: ${text}` : ""}`;
+}
 
-  for (const [name, value] of Object.entries(headers)) {
-    if (!name || value == null) continue;
-    if (/^(user-agent|accept-encoding)$/i.test(name)) continue;
-    if (/^accept$/i.test(name)) continue;
-    args.push("-H", `${name}: ${value}`);
-  }
-
-  if (body) args.push("--data-binary", "@-");
-  args.push(url);
-
-  const stdin = body ? "pipe" : "ignore";
+function spawnCurlProcess(bin, args, body) {
   return new Promise((resolve, reject) => {
+    const stdin = body ? "pipe" : "ignore";
     const child = spawn(bin, args, {
       stdio: [stdin, "pipe", "pipe"],
       env: curlChildEnv()
@@ -280,37 +258,114 @@ function runChromeCurl({
       reject(new Error(error.message || "Could not start Chrome TLS client"));
     });
     child.on("close", (code) => {
-      const { headerDump, body: responseBody, effectiveUrl, locations } = splitHeadersAndBody(stdout);
-      const parsed = parseHeaderDump(headerDump);
-      const payload = {
-        status: parsed.status || 0,
-        body: responseBody,
-        headers: parsed.headers,
-        setCookie: parsed.setCookie,
-        effectiveUrl: effectiveUrl || "",
-        locations: locations || [],
-        forcedIpv4: forceIpv4
-      };
-      if (code !== 0) {
-        const recoverable =
-          payload.status > 0 ||
-          payload.locations.length > 0 ||
-          /loadshare\.(?:org|net)/i.test(payload.body || "") ||
-          /loadshare\.(?:org|net)/i.test(payload.effectiveUrl || "");
-        if (recoverable) {
-          resolve(payload);
-          return;
-        }
-        const detail = (stderr || stdout).trim().slice(0, 300);
-        reject(
-          new Error(`Tornado request failed (exit ${code})${detail ? `: ${detail}` : ""}`)
-        );
-        return;
-      }
-      resolve(payload);
+      resolve({ code, stdout, stderr });
     });
     if (body) child.stdin.end(body);
   });
+}
+
+function finishChromePayload(stdout, forceIpv4) {
+  const { headerDump, body: responseBody, effectiveUrl, locations } = splitHeadersAndBody(stdout);
+  const parsed = parseHeaderDump(headerDump);
+  return {
+    status: parsed.status || 0,
+    body: responseBody,
+    headers: parsed.headers,
+    setCookie: parsed.setCookie,
+    effectiveUrl: effectiveUrl || "",
+    locations: locations || [],
+    forcedIpv4: forceIpv4
+  };
+}
+
+function payloadRecoverable(payload) {
+  return (
+    payload.status > 0 ||
+    payload.locations.length > 0 ||
+    /loadshare\.(?:org|net)/i.test(payload.body || "") ||
+    /loadshare\.(?:org|net)/i.test(payload.effectiveUrl || "")
+  );
+}
+
+function buildChromeArgs({ url, method, headers, follow, cookieJar, forceIpv4, forceIpv6, accept }) {
+  const args = [...chrome131Args({ accept })];
+  if (forceIpv4) args.push("-4");
+  else if (forceIpv6) args.push("-6");
+  args.push("-sS", "--max-time", "45", "-i", "--max-redirs", "8");
+  args.push("-w", `\n${EFFECTIVE_MARK}%{url_effective}`);
+  if (cookieJar) args.push("-b", cookieJar, "-c", cookieJar);
+  if (follow) args.push("-L");
+  if (method && method !== "GET") args.push("-X", method);
+  for (const [name, value] of Object.entries(headers || {})) {
+    if (!name || value == null) continue;
+    if (/^(user-agent|accept-encoding)$/i.test(name)) continue;
+    if (/^accept$/i.test(name)) continue;
+    args.push("-H", `${name}: ${value}`);
+  }
+  return args;
+}
+
+async function runChromeCurl({
+  url,
+  method = "GET",
+  headers = {},
+  body = "",
+  follow = true,
+  cookieJar = "",
+  ipv4
+} = {}) {
+  const bin = impersonateBin();
+  if (!bin) throw new Error(missingTlsMessage());
+
+  const callerAccept = pickHeader(headers, "Accept");
+  const forceIpv4 = ipv4 === true || (ipv4 !== false && shouldForceIpv4(url));
+  const forceIpv6 = !forceIpv4 && prefersIpv6(url);
+
+  const makeArgs = (v4, v6) => {
+    const args = buildChromeArgs({
+      url,
+      method,
+      headers,
+      follow,
+      cookieJar,
+      forceIpv4: v4,
+      forceIpv6: v6,
+      accept: callerAccept || undefined
+    });
+    if (body) args.push("--data-binary", "@-");
+    args.push(url);
+    return args;
+  };
+
+  const runOnce = async (v4, v6) => {
+    const spawned = await spawnCurlProcess(bin, makeArgs(v4, v6), body);
+    const payload = finishChromePayload(spawned.stdout, v4);
+    payload.curlCode = spawned.code;
+    payload.curlStderr = spawned.stderr;
+    if (spawned.code !== 0 && !payloadRecoverable(payload)) {
+      const err = new Error(
+        explainCurlError(spawned.code, (spawned.stderr || spawned.stdout).trim().slice(0, 300), { ipv6: v6 })
+      );
+      err.curlCode = spawned.code;
+      err.curlStderr = spawned.stderr;
+      err.ipv6 = v6;
+      throw err;
+    }
+    return payload;
+  };
+
+  try {
+    return await runOnce(forceIpv4, forceIpv6);
+  } catch (error) {
+    if (forceIpv6 && isConnectFail(error.curlCode, error.curlStderr)) {
+      try {
+        return await runOnce(true, false);
+      } catch {
+        throw new Error(explainCurlError(error.curlCode, error.curlStderr, { ipv6: true }));
+      }
+    }
+    throw error;
+  }
 }
 
 function curlToFile({ url, outputPath, headers = {}, cookieJar = "", ipv4 } = {}) {
@@ -321,48 +376,64 @@ function curlToFile({ url, outputPath, headers = {}, cookieJar = "", ipv4 } = {}
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const callerAccept = pickHeader(headers, "Accept");
-  const args = [...chrome131Args({ accept: callerAccept || "image/avif,image/webp,image/apng,image/*,*/*;q=0.8" })];
   const forceIpv4 = ipv4 === true || (ipv4 !== false && shouldForceIpv4(url));
   const forceIpv6 = !forceIpv4 && prefersIpv6(url);
-  if (forceIpv4) args.push("-4");
-  else if (forceIpv6) args.push("-6");
-  args.push("-sS", "--fail", "--max-time", "45", "--max-redirs", "8", "-L", "-o", outputPath);
-  if (cookieJar) {
-    args.push("-b", cookieJar, "-c", cookieJar);
-  }
-  for (const [name, value] of Object.entries(headers)) {
-    if (!name || value == null) continue;
-    if (/^(user-agent|accept-encoding)$/i.test(name)) continue;
-    if (/^accept$/i.test(name)) continue;
-    args.push("-H", `${name}: ${value}`);
-  }
-  args.push(url);
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, {
-      stdio: ["ignore", "ignore", "pipe"],
-      env: curlChildEnv()
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", (error) => {
-      reject(new Error(error.message || "Could not start Chrome TLS client"));
-    });
-    child.on("close", (code) => {
-      if (code !== 0) {
-        try {
-          if (fs.existsSync(outputPath) && fs.statSync(outputPath).size < 32) fs.unlinkSync(outputPath);
-        } catch {
-          // ignore
+  const makeArgs = (v4, v6) => {
+    const args = [...chrome131Args({ accept: callerAccept || "image/avif,image/webp,image/apng,image/*,*/*;q=0.8" })];
+    if (v4) args.push("-4");
+    else if (v6) args.push("-6");
+    args.push("-sS", "--fail", "--max-time", "45", "--max-redirs", "8", "-L", "-o", outputPath);
+    if (cookieJar) args.push("-b", cookieJar, "-c", cookieJar);
+    for (const [name, value] of Object.entries(headers)) {
+      if (!name || value == null) continue;
+      if (/^(user-agent|accept-encoding)$/i.test(name)) continue;
+      if (/^accept$/i.test(name)) continue;
+      args.push("-H", `${name}: ${value}`);
+    }
+    args.push(url);
+    return args;
+  };
+
+  const runOnce = (v4, v6) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(bin, makeArgs(v4, v6), {
+        stdio: ["ignore", "ignore", "pipe"],
+        env: curlChildEnv()
+      });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("error", (error) => {
+        reject(new Error(error.message || "Could not start Chrome TLS client"));
+      });
+      child.on("close", (code) => {
+        if (code !== 0) {
+          try {
+            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size < 32) fs.unlinkSync(outputPath);
+          } catch {
+            // ignore
+          }
+          const err = new Error(
+            `Artwork download failed (exit ${code})${stderr.trim() ? `: ${stderr.trim().slice(0, 300)}` : ""}`
+          );
+          err.curlCode = code;
+          err.curlStderr = stderr;
+          reject(err);
+          return;
         }
-        const detail = stderr.trim().slice(0, 300);
-        reject(new Error(`Artwork download failed (exit ${code})${detail ? `: ${detail}` : ""}`));
-        return;
-      }
-      resolve({ ok: true, outputPath });
+        resolve({ ok: true, outputPath });
+      });
     });
+
+  return runOnce(forceIpv4, forceIpv6).catch((error) => {
+    if (forceIpv6 && isConnectFail(error.curlCode, error.curlStderr)) {
+      return runOnce(true, false).catch(() =>
+        Promise.reject(new Error(explainCurlError(error.curlCode, error.curlStderr, { ipv6: true })))
+      );
+    }
+    return Promise.reject(error);
   });
 }
 
@@ -473,7 +544,9 @@ function tornadoIpMode() {
 }
 
 function tornadoIpFlag() {
-  return tornadoIpMode() === "6" ? "-6" : "-4";
+  const mode = tornadoIpMode();
+  if (mode === "6" || mode === "auto") return "-6";
+  return "-4";
 }
 
 function shouldForceIpv4(url) {
@@ -487,7 +560,7 @@ function shouldForceIpv4(url) {
 function prefersIpv6(url) {
   const host = hostnameOf(url);
   if (/ip6/i.test(host)) return true;
-  if (tornadoIpMode() === "6" && isTornadoHostName(host)) return true;
+  if ((tornadoIpMode() === "6" || tornadoIpMode() === "auto") && isTornadoHostName(host)) return true;
   return false;
 }
 
@@ -766,7 +839,12 @@ class TornadoClient {
       const eq = part.indexOf("=");
       if (eq < 1) continue;
       const name = part.slice(0, eq).trim();
-      const value = part.slice(eq + 1).trim();
+      let value = part.slice(eq + 1).trim();
+      try {
+        value = decodeURIComponent(value.replace(/\+/g, " "));
+      } catch {
+        // keep the pasted value if it is not URI-encoded
+      }
       if (name) this.jar[name] = value;
     }
     this.persist();
@@ -846,6 +924,7 @@ class TornadoClient {
         hasIdentity: evaluated.hasIdentity || hasIdentity,
         lastKnownLoggedIn: base.lastKnownLoggedIn,
         chromeTls: base.chromeTls,
+        tornadoIp: tornadoIpMode(),
         loginUrl: base.loginUrl,
         error
       };

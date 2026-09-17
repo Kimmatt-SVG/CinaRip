@@ -5,6 +5,10 @@ const path = require("path");
 
 const DEFAULT_DIRS = ["/opt/curl-impersonate-host", "/opt/curl-impersonate"];
 
+function localCurlBinDirs() {
+  return [path.join(__dirname, "curl-bin"), path.join(__dirname, "..", "curl-bin")];
+}
+
 function isFile(file) {
   try {
     return fs.statSync(file).isFile();
@@ -37,7 +41,7 @@ function findImpersonateBin(options = {}) {
   const env = options.env || process.env;
   const isFileFn = options.isFile || isFile;
   const readDir = options.readDir || ((dir) => fs.readdirSync(dir));
-  const dirs = options.dirs || DEFAULT_DIRS;
+  const dirs = options.dirs || [...localCurlBinDirs(), ...DEFAULT_DIRS];
 
   const named = [
     env.CURL_IMPERSONATE_BIN,
@@ -58,6 +62,7 @@ function findImpersonateBin(options = {}) {
 function missingTlsMessage() {
   return (
     "Chrome TLS (curl-impersonate) is missing. An empty curl-bin folder was covering the image binary. " +
+    "On a laptop, put curl-impersonate in nas-web/curl-bin. " +
     "Copy docker-compose.yml, then on the NAS run: sudo docker compose up -d --build"
   );
 }

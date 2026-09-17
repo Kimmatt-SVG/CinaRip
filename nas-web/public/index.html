@@ -8,7 +8,7 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=67" />
+    <link rel="stylesheet" href="/styles.css?v=71" />
     <link rel="preload" href="/sounds/abyssal-starry-sky-slowed.mp3?v=4" as="audio" type="audio/mpeg" />
     <script>
       document.documentElement.classList.toggle(
@@ -72,23 +72,33 @@
       </div>
     </header>
 
-    <section class="meter-card" id="job-card" hidden>
+    <section class="meter-card glow-card" id="job-card" hidden>
       <div class="meter-head">
         <span id="job-title">Download</span>
         <span id="job-label">—</span>
       </div>
-      <div class="meter"><i id="job-bar"></i></div>
+      <div class="plasma-meter is-active" id="job-meter">
+        <div class="plasma-meter-track">
+          <i id="job-bar" class="plasma-meter-fill"></i>
+          <span class="plasma-meter-sheen" aria-hidden="true"></span>
+        </div>
+      </div>
       <p id="job-phase" class="muted"></p>
     </section>
 
     <div class="view-stage">
     <main id="view-library" class="view">
-      <section class="meter-card" id="storage-card">
+      <section class="meter-card glow-card" id="storage-card">
         <div class="meter-head">
           <span>Public / Videos</span>
           <span id="storage-label">—</span>
         </div>
-        <div class="meter"><i id="storage-bar"></i></div>
+        <div class="plasma-meter" id="storage-meter">
+          <div class="plasma-meter-track">
+            <i id="storage-bar" class="plasma-meter-fill"></i>
+            <span class="plasma-meter-sheen" aria-hidden="true"></span>
+          </div>
+        </div>
         <p id="library-summary" class="muted">Scanning library…</p>
       </section>
       <div id="library-list"></div>
@@ -138,10 +148,16 @@
         </div>
       </div>
 
-      <section id="download-queue-section" class="meter-card download-queue-section" aria-label="Download queue">
+      <section id="download-queue-section" class="meter-card glow-card download-queue-section" aria-label="Download queue">
         <div class="meter-head">
           <span>Download queue</span>
           <span id="download-queue-summary" class="download-queue-summary">0 items queued</span>
+        </div>
+        <div class="plasma-meter" id="queue-meter" hidden>
+          <div class="plasma-meter-track">
+            <i id="queue-bar" class="plasma-meter-fill"></i>
+            <span class="plasma-meter-sheen" aria-hidden="true"></span>
+          </div>
         </div>
         <div class="queue-run-bar">
           <button id="start-download-queue" type="button" class="ghost primary-action">Download</button>
@@ -248,6 +264,6 @@
     <p id="status" class="status-banner" hidden role="status"></p>
     <script src="/vendor/anime.min.js"></script>
     <script src="/sounds.js?v=23"></script>
-    <script src="/app.js?v=43"></script>
+    <script src="/app.js?v=47"></script>
   </body>
 </html>
