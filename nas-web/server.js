@@ -1195,12 +1195,28 @@ function extractPosterUrl(html, pageUrl, baseUrl = BASE_URL) {
   return { parseTvShowPage, buildTvShowPlan, extractPosterUrl, readShowMeta, dedupeEpisodes, normalizeEpisodeNumbers, guessSeasonHubUrls, guessShowHubUrls, mergeSeasonLists };
 })();
 
-const { DownloadQueue } = (() => {
+const { DownloadQueue, normalizeDestination, destinationLabel, DEVICE_TARGET_HEIGHT } = (() => {
 function normalizePageUrl(url) {
   return canonicalContentUrl(url) || normalizeMovieUrl(url) || String(url || "").trim();
 }
 
 const ACTIVE_EPISODE_STATUSES = new Set(["pending", "loading", "downloading"]);
+const DEVICE_TARGET_HEIGHT = 720;
+
+function normalizeDestination(value) {
+  return String(value || "").trim().toLowerCase() === "device" ? "device" : "nas";
+}
+
+function destinationLabel(destination) {
+  return normalizeDestination(destination) === "device" ? "This device" : "Server";
+}
+
+function safeDeviceFileName(value) {
+  return String(value || "")
+    .replace(/^.*[\\/]/, "")
+    .replace(/[<>:"|?*]+/g, "_")
+    .trim();
+}
 
 function episodeQueueKey(showTitle, season, episode) {
   const show = String(showTitle || "")
@@ -1236,14 +1252,15 @@ function sanitizeQueueItem(raw = {}) {
     kind,
     title: String(raw.title || (kind === "episode" ? "Episode" : titleFromMovieUrl(movieUrl))).trim() || "Queued item",
     movieUrl,
-    destination: "nas",
+    destination: normalizeDestination(raw.destination),
     status,
     error: raw.error ? String(raw.error) : null,
     passRetries: Number(raw.passRetries) || 0,
     addedAt: Number(raw.addedAt) || Date.now(),
     progress: Number(raw.progress) || 0,
     qualityLabel: raw.qualityLabel ? String(raw.qualityLabel) : "",
-    posterUrl: raw.posterUrl || null
+    posterUrl: raw.posterUrl || null,
+    deviceFile: safeDeviceFileName(raw.deviceFile)
   };
 
   if (kind === "episode") {
@@ -1309,14 +1326,15 @@ class DownloadQueue {
       kind: "movie",
       title: options.title || titleFromMovieUrl(normalizedUrl),
       movieUrl: normalizedUrl,
-      destination: "nas",
+      destination: normalizeDestination(options.destination),
       status: "pending",
       error: null,
       passRetries: 0,
       addedAt: Date.now(),
       progress: 0,
       qualityLabel: "",
-      posterUrl: options.posterUrl || null
+      posterUrl: options.posterUrl || null,
+      deviceFile: ""
     };
 
     this.items.push(item);
@@ -1350,13 +1368,14 @@ class DownloadQueue {
       episode: episodeNumber,
       episodeTitle,
       posterUrl: options.posterUrl || episode.posterUrl || null,
-      destination: "nas",
+      destination: normalizeDestination(options.destination || episode.destination),
       status: "pending",
       error: null,
       passRetries: 0,
       addedAt: Date.now(),
       progress: 0,
-      qualityLabel: ""
+      qualityLabel: "",
+      deviceFile: ""
     };
 
     this.items.push(item);
@@ -1376,20 +1395,34 @@ class DownloadQueue {
     return { ok: true, added, skipped };
   }
 
-  addMany(entries = []) {
+  addMany(entries = [], options = {}) {
     const added = [];
     const skipped = [];
+    const fallback = normalizeDestination(options.destination);
 
     for (const entry of entries) {
       const movieUrl = typeof entry === "string" ? entry : entry?.movieUrl;
       const title = typeof entry === "object" ? entry?.title : null;
       const posterUrl = typeof entry === "object" ? entry?.posterUrl : null;
-      const result = this.add(movieUrl, { title, posterUrl });
+      const destination =
+        typeof entry === "object" ? normalizeDestination(entry.destination || fallback) : fallback;
+      const result = this.add(movieUrl, { title, posterUrl, destination });
       if (result.ok) added.push(result.item);
       else skipped.push({ movieUrl, error: result.error });
     }
 
     return { ok: true, added, skipped };
+  }
+
+  setDestination(destination) {
+    const dest = normalizeDestination(destination);
+    let updated = 0;
+    for (const item of this.items) {
+      if (item.status !== "pending" && item.status !== "failed") continue;
+      item.destination = dest;
+      updated += 1;
+    }
+    return { ok: true, destination: dest, updated };
   }
 
   remove(id) {
@@ -1559,7 +1592,7 @@ class DownloadQueue {
     };
   }
 }
-  return { DownloadQueue };
+  return { DownloadQueue, normalizeDestination, destinationLabel, DEVICE_TARGET_HEIGHT };
 })();
 
 const { loadQueueState, saveQueueState, defaultStorePath } = (() => {
@@ -2748,6 +2781,26 @@ function qualityLabel(height) {
   return "direct";
 }
 
+function pickBestLink(ranked = [], options = {}) {
+  const list = (Array.isArray(ranked) ? ranked : []).filter((link) => link && link.url);
+  if (!list.length) return null;
+
+  const sorted = [...list].sort((a, b) => Number(b.height || 0) - Number(a.height || 0));
+  const targetHeight = Number(options.targetHeight) || 0;
+  if (!targetHeight) return sorted[0];
+
+  const exact = sorted.find((link) => Number(link.height) === targetHeight);
+  if (exact) return exact;
+
+  const below = sorted.filter((link) => Number(link.height) > 0 && Number(link.height) < targetHeight);
+  if (below[0]) return below[0];
+
+  const above = [...sorted]
+    .filter((link) => Number(link.height) > targetHeight)
+    .sort((a, b) => Number(a.height) - Number(b.height));
+  return above[0] || sorted[0];
+}
+
 function isLoadshareDownloadUrl(url) {
   return Boolean(url && LOADSHARE_PATH.test(url));
 }
@@ -3348,7 +3401,8 @@ class TornadoClient {
     };
   }
 
-  async findDirectLink(movieUrl) {
+  async findDirectLink(movieUrl, options = {}) {
+    const targetHeight = Number(options.targetHeight) || 0;
     const canonical =
       canonicalMovieUrl(movieUrl) || canonicalContentUrl(movieUrl) || String(movieUrl || "").trim();
     if (!canonical) {
@@ -3505,7 +3559,9 @@ class TornadoClient {
             if (nestedClean && isLoadshareDownloadUrl(nestedClean)) continue;
             await ingest(nested, acceptForApiPath(nested));
           }
-          if ([...links].some((url) => parseQuality(url) >= 1080)) break outer;
+          const foundHeights = [...links].map((url) => parseQuality(url));
+          if (targetHeight && foundHeights.includes(targetHeight)) break outer;
+          if (!targetHeight && foundHeights.some((height) => height >= 1080)) break outer;
         }
       }
     }
@@ -3537,7 +3593,7 @@ class TornadoClient {
       };
     }
 
-    const best = ranked[0];
+    const best = pickBestLink(ranked, { targetHeight }) || ranked[0];
     return {
       ok: true,
       movieUrl: canonical,
@@ -4630,6 +4686,8 @@ class DownloadRunner {
     this.queue = options.queue || new DownloadQueue();
     this.videoRoot = options.videoRoot || VIDEO_ROOT;
     this.storePath = options.storePath || defaultStorePath();
+    this.deviceRoot =
+      options.deviceRoot || path.join(path.dirname(this.storePath), "device-downloads");
     this.downloadFn = options.downloadFn || downloadHttpFile;
     this.busy = false;
     this.current = null;
@@ -4661,7 +4719,8 @@ class DownloadRunner {
     }
     const result = this.queue.add(movie.movieUrl, {
       title: movie.title,
-      posterUrl: movie.posterUrl
+      posterUrl: movie.posterUrl,
+      destination: movie.destination
     });
     if (result.ok) this.persist();
     return { ...result, ...this.status() };
@@ -4671,7 +4730,10 @@ class DownloadRunner {
     if (this.queue.running) {
       return { ok: false, error: "Stop the queue before adding more episodes.", ...this.status() };
     }
-    const result = this.queue.addEpisode(episode, options);
+    const result = this.queue.addEpisode(episode, {
+      ...options,
+      destination: options.destination || episode.destination
+    });
     if (result.ok) this.persist();
     return { ...result, ...this.status() };
   }
@@ -4685,7 +4747,7 @@ class DownloadRunner {
     return { ...result, ...this.status() };
   }
 
-  enqueueMany(entries) {
+  enqueueMany(entries, options = {}) {
     if (this.queue.running) {
       return { ok: false, error: "Stop the queue before adding more titles.", ...this.status() };
     }
@@ -4699,24 +4761,39 @@ class DownloadRunner {
         ...this.status()
       };
     }
-    const result = this.queue.addMany(moviesOnly);
+    const result = this.queue.addMany(moviesOnly, { destination: options.destination });
     this.persist();
     return { ...result, ...this.status() };
   }
 
   remove(id) {
+    const item = this.queue.items.find((entry) => entry.id === id);
     const result = this.queue.remove(id);
-    if (result.ok) this.persist();
+    if (result.ok) {
+      if (item) this.removeDeviceFile(item);
+      this.persist();
+    }
     return { ...result, ...this.status() };
   }
 
   clear() {
+    const deviceItems = this.queue.items.filter((item) => normalizeDestination(item.destination) === "device");
     const result = this.queue.clear();
-    if (result.ok) this.persist();
+    if (result.ok) {
+      for (const item of deviceItems) this.removeDeviceFile(item);
+      this.persist();
+    }
     return { ...result, ...this.status() };
   }
 
-  start() {
+  setDestination(destination) {
+    const result = this.queue.setDestination(destination);
+    this.persist();
+    return { ...result, ...this.status() };
+  }
+
+  start(options = {}) {
+    if (options.destination) this.queue.setDestination(options.destination);
     const began = this.queue.beginRun();
     if (!began.ok) return { ...began, ...this.status() };
     this.persist();
@@ -4754,6 +4831,14 @@ class DownloadRunner {
   }
 
   outputPathFor(item, linkUrl) {
+    if (normalizeDestination(item.destination) === "device") {
+      const fileName =
+        item.kind === "episode"
+          ? episodeFileName(item.season, item.episode, item.episodeTitle || item.title)
+          : fileNameFromLink(linkUrl, item.title);
+      fs.mkdirSync(this.deviceRoot, { recursive: true });
+      return path.join(this.deviceRoot, fileName);
+    }
     if (item.kind === "episode") {
       const dest = episodeOutputPath(this.videoRoot, item);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -4761,6 +4846,26 @@ class DownloadRunner {
     }
     const fileName = fileNameFromLink(linkUrl, item.title);
     return movieOutputPath(this.videoRoot, fileName);
+  }
+
+  deviceFilePath(item) {
+    if (!item || normalizeDestination(item.destination) !== "device") return null;
+    const name = String(item.deviceFile || "").replace(/^.*[\\/]/, "");
+    if (!name || name === "." || name === "..") return null;
+    const root = path.resolve(this.deviceRoot);
+    const abs = path.resolve(root, name);
+    if (abs !== root && !abs.startsWith(`${root}${path.sep}`)) return null;
+    return abs;
+  }
+
+  removeDeviceFile(item) {
+    const abs = this.deviceFilePath(item);
+    if (!abs) return;
+    try {
+      fs.unlinkSync(abs);
+    } catch {
+      // temp file may already be gone
+    }
   }
 
   headersToList(headers = {}) {
@@ -4846,7 +4951,11 @@ class DownloadRunner {
         return;
       }
 
-      const link = await this.client.findDirectLink(queued.movieUrl);
+      const toDevice = normalizeDestination(queued.destination) === "device";
+      const link = await this.client.findDirectLink(
+        queued.movieUrl,
+        toDevice ? { targetHeight: DEVICE_TARGET_HEIGHT } : {}
+      );
       if (!link.ok) throw new Error(link.error);
 
       if (this.queue.cancelRequested) {
@@ -4857,7 +4966,11 @@ class DownloadRunner {
 
       const outputPath = this.outputPathFor(queued, link.best.url);
       this.queue.markDownloading(id);
-      this.queue.patch(id, { qualityLabel: link.best.qualityLabel, progress: 12 });
+      this.queue.patch(id, {
+        qualityLabel: link.best.qualityLabel,
+        progress: 12,
+        deviceFile: toDevice ? path.basename(outputPath) : ""
+      });
       this.persist();
       this.current = {
         id,
@@ -4896,7 +5009,7 @@ class DownloadRunner {
         }
       });
 
-      if (!this.queue.cancelRequested) {
+      if (!this.queue.cancelRequested && !toDevice) {
         await this.attachArtwork(queued, outputPath);
       }
 
@@ -4904,8 +5017,9 @@ class DownloadRunner {
         this.queue.markSkipped(id, "Cancelled");
       } else {
         this.queue.markDone(id);
+        if (toDevice) this.queue.patch(id, { deviceFile: path.basename(outputPath) });
         this.current = null;
-        if (typeof this.onLibraryInvalidate === "function") this.onLibraryInvalidate();
+        if (!toDevice && typeof this.onLibraryInvalidate === "function") this.onLibraryInvalidate();
       }
       this.persist();
     } catch (error) {
@@ -6013,7 +6127,7 @@ function absFromRel(rel) {
   return abs;
 }
 
-function pipeFile(req, res, filePath, contentType, downloadName) {
+function pipeFile(req, res, filePath, contentType, downloadName, asAttachment) {
   let stat;
   try {
     stat = fs.statSync(filePath);
@@ -6024,9 +6138,10 @@ function pipeFile(req, res, filePath, contentType, downloadName) {
 
   const total = stat.size;
   const range = req.headers.range;
+  const mode = asAttachment ? "attachment" : "inline";
   const disposition = downloadName
-    ? `inline; filename="${String(downloadName).replace(/"/g, "")}"`
-    : "inline";
+    ? `${mode}; filename="${String(downloadName).replace(/"/g, "")}"`
+    : mode;
 
   if (range) {
     const match = String(range).match(/bytes=(\d*)-(\d*)/);
@@ -6105,12 +6220,14 @@ function healthPayload() {
     showCount: library.showCount,
     episodeCount: library.episodeCount,
     storage: library.storage,
-    apis: ["search", "downloads", "tornado", "freezer"]
+    apis: ["search", "downloads", "tornado", "freezer", "auth"]
   };
 }
 
 async function handleApi(req, res, url) {
-  const pathname = url.pathname;
+  if (await handlePinAuth(req, res, url)) return;
+
+  const pathname = url.pathname.replace(/\/+$/, "") || "/";
 
   if (pathname === "/api/health" && req.method === "GET") {
     sendJson(res, 200, healthPayload());
@@ -6296,8 +6413,28 @@ async function handleApi(req, res, url) {
   }
 
   if (pathname === "/api/downloads/start" && req.method === "POST") {
-    const result = downloads.start();
+    const body = await readJson(req);
+    const result = downloads.start({ destination: body.destination });
     sendJson(res, result.ok ? 200 : 400, result);
+    return;
+  }
+
+  if (pathname === "/api/downloads/destination" && req.method === "POST") {
+    const body = await readJson(req);
+    const result = downloads.setDestination(body.destination);
+    sendJson(res, result.ok ? 200 : 400, result);
+    return;
+  }
+
+  if (pathname.startsWith("/api/downloads/device/") && req.method === "GET") {
+    const id = decodeURIComponent(pathname.slice("/api/downloads/device/".length));
+    const item = downloads.queue.items.find((entry) => entry.id === id);
+    const abs = item ? downloads.deviceFilePath(item) : null;
+    if (!item || item.status !== "done" || !abs || !fs.existsSync(abs)) {
+      sendText(res, 404, "Device download is not ready");
+      return;
+    }
+    pipeFile(req, res, abs, "video/mp4", item.deviceFile || path.basename(abs), true);
     return;
   }
 
@@ -6328,13 +6465,14 @@ async function handleApi(req, res, url) {
     if (Array.isArray(body.episodes) && body.episodes.length) {
       const result = downloads.enqueueEpisodes(body.episodes, {
         showTitle: body.showTitle,
-        posterUrl: body.posterUrl
+        posterUrl: body.posterUrl,
+        destination: body.destination
       });
       sendJson(res, result.ok ? 200 : 400, result);
       return;
     }
     if (Array.isArray(body.movies) && body.movies.length) {
-      const result = downloads.enqueueMany(body.movies);
+      const result = downloads.enqueueMany(body.movies, { destination: body.destination });
       sendJson(res, result.ok ? 200 : 400, result);
       return;
     }
@@ -6348,7 +6486,7 @@ async function handleApi(req, res, url) {
           showTitle: body.showTitle,
           posterUrl: body.posterUrl
         },
-        { showTitle: body.showTitle, posterUrl: body.posterUrl }
+        { showTitle: body.showTitle, posterUrl: body.posterUrl, destination: body.destination }
       );
       sendJson(res, result.ok ? 200 : 400, result);
       return;
@@ -6360,7 +6498,8 @@ async function handleApi(req, res, url) {
     const result = downloads.enqueue({
       movieUrl: body.movieUrl,
       title: body.title,
-      posterUrl: body.posterUrl
+      posterUrl: body.posterUrl,
+      destination: body.destination
     });
     sendJson(res, result.ok ? 200 : 400, result);
     return;

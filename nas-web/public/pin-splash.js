@@ -121,6 +121,10 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pin })
     });
+    if (/unknown api route/i.test(result.data?.error || "") || result.status === 404) {
+      setError("This app is still running a server without the PIN lock. Copy server.js onto the NAS, then from Public/cinarip run: sudo docker compose up -d --build --force-recreate");
+      return;
+    }
     if (result.data?.ok) {
       setError("");
       unlocked = true;
@@ -249,8 +253,8 @@
       }
       stopWatchdog();
       showPin(false);
-      if (config.status === 404) {
-        setError("This app is still running a server without the PIN lock. Restart CinaRip.");
+      if (config.status === 404 || /unknown api route/i.test(config.data?.error || "")) {
+        setError("This app is still running a server without the PIN lock. Copy server.js onto the NAS, then from Public/cinarip run: sudo docker compose up -d --build --force-recreate");
       } else if (!config.data?.configured) {
         setError("Set APP_PIN (or CINARIP_PIN) and restart the app.");
       } else if (config.data?.locked) {

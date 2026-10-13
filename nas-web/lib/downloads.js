@@ -6,7 +6,8 @@ const { TornadoClient } = require("./tornado");
 const { downloadHttpFile } = require("./http-download");
 const { DownloadQueue } = require("./download-queue");
 const { loadQueueState, saveQueueState, defaultStorePath } = require("./queue-store");
-const { fileNameFromLink, movieOutputPath, episodeOutputPath } = require("./download-paths");
+const { fileNameFromLink, episodeFileName, movieOutputPath, episodeOutputPath } = require("./download-paths");
+const { normalizeDestination, DEVICE_TARGET_HEIGHT } = require("./download-queue");
 const {
   pickArtworkUrlFromHtml,
   showFolderFromEpisodePath,
@@ -26,6 +27,8 @@ class DownloadRunner {
     this.queue = options.queue || new DownloadQueue();
     this.videoRoot = options.videoRoot || VIDEO_ROOT;
     this.storePath = options.storePath || defaultStorePath();
+    this.deviceRoot =
+      options.deviceRoot || path.join(path.dirname(this.storePath), "device-downloads");
     this.downloadFn = options.downloadFn || downloadHttpFile;
     this.busy = false;
     this.current = null;
@@ -57,7 +60,8 @@ class DownloadRunner {
     }
     const result = this.queue.add(movie.movieUrl, {
       title: movie.title,
-      posterUrl: movie.posterUrl
+      posterUrl: movie.posterUrl,
+      destination: movie.destination
     });
     if (result.ok) this.persist();
     return { ...result, ...this.status() };
@@ -67,7 +71,10 @@ class DownloadRunner {
     if (this.queue.running) {
       return { ok: false, error: "Stop the queue before adding more episodes.", ...this.status() };
     }
-    const result = this.queue.addEpisode(episode, options);
+    const result = this.queue.addEpisode(episode, {
+      ...options,
+      destination: options.destination || episode.destination
+    });
     if (result.ok) this.persist();
     return { ...result, ...this.status() };
   }
@@ -81,7 +88,7 @@ class DownloadRunner {
     return { ...result, ...this.status() };
   }
 
-  enqueueMany(entries) {
+  enqueueMany(entries, options = {}) {
     if (this.queue.running) {
       return { ok: false, error: "Stop the queue before adding more titles.", ...this.status() };
     }
@@ -95,24 +102,39 @@ class DownloadRunner {
         ...this.status()
       };
     }
-    const result = this.queue.addMany(moviesOnly);
+    const result = this.queue.addMany(moviesOnly, { destination: options.destination });
     this.persist();
     return { ...result, ...this.status() };
   }
 
   remove(id) {
+    const item = this.queue.items.find((entry) => entry.id === id);
     const result = this.queue.remove(id);
-    if (result.ok) this.persist();
+    if (result.ok) {
+      if (item) this.removeDeviceFile(item);
+      this.persist();
+    }
     return { ...result, ...this.status() };
   }
 
   clear() {
+    const deviceItems = this.queue.items.filter((item) => normalizeDestination(item.destination) === "device");
     const result = this.queue.clear();
-    if (result.ok) this.persist();
+    if (result.ok) {
+      for (const item of deviceItems) this.removeDeviceFile(item);
+      this.persist();
+    }
     return { ...result, ...this.status() };
   }
 
-  start() {
+  setDestination(destination) {
+    const result = this.queue.setDestination(destination);
+    this.persist();
+    return { ...result, ...this.status() };
+  }
+
+  start(options = {}) {
+    if (options.destination) this.queue.setDestination(options.destination);
     const began = this.queue.beginRun();
     if (!began.ok) return { ...began, ...this.status() };
     this.persist();
@@ -150,6 +172,14 @@ class DownloadRunner {
   }
 
   outputPathFor(item, linkUrl) {
+    if (normalizeDestination(item.destination) === "device") {
+      const fileName =
+        item.kind === "episode"
+          ? episodeFileName(item.season, item.episode, item.episodeTitle || item.title)
+          : fileNameFromLink(linkUrl, item.title);
+      fs.mkdirSync(this.deviceRoot, { recursive: true });
+      return path.join(this.deviceRoot, fileName);
+    }
     if (item.kind === "episode") {
       const dest = episodeOutputPath(this.videoRoot, item);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -157,6 +187,26 @@ class DownloadRunner {
     }
     const fileName = fileNameFromLink(linkUrl, item.title);
     return movieOutputPath(this.videoRoot, fileName);
+  }
+
+  deviceFilePath(item) {
+    if (!item || normalizeDestination(item.destination) !== "device") return null;
+    const name = String(item.deviceFile || "").replace(/^.*[\\/]/, "");
+    if (!name || name === "." || name === "..") return null;
+    const root = path.resolve(this.deviceRoot);
+    const abs = path.resolve(root, name);
+    if (abs !== root && !abs.startsWith(`${root}${path.sep}`)) return null;
+    return abs;
+  }
+
+  removeDeviceFile(item) {
+    const abs = this.deviceFilePath(item);
+    if (!abs) return;
+    try {
+      fs.unlinkSync(abs);
+    } catch {
+      // temp file may already be gone
+    }
   }
 
   headersToList(headers = {}) {
@@ -242,7 +292,11 @@ class DownloadRunner {
         return;
       }
 
-      const link = await this.client.findDirectLink(queued.movieUrl);
+      const toDevice = normalizeDestination(queued.destination) === "device";
+      const link = await this.client.findDirectLink(
+        queued.movieUrl,
+        toDevice ? { targetHeight: DEVICE_TARGET_HEIGHT } : {}
+      );
       if (!link.ok) throw new Error(link.error);
 
       if (this.queue.cancelRequested) {
@@ -253,7 +307,11 @@ class DownloadRunner {
 
       const outputPath = this.outputPathFor(queued, link.best.url);
       this.queue.markDownloading(id);
-      this.queue.patch(id, { qualityLabel: link.best.qualityLabel, progress: 12 });
+      this.queue.patch(id, {
+        qualityLabel: link.best.qualityLabel,
+        progress: 12,
+        deviceFile: toDevice ? path.basename(outputPath) : ""
+      });
       this.persist();
       this.current = {
         id,
@@ -292,7 +350,7 @@ class DownloadRunner {
         }
       });
 
-      if (!this.queue.cancelRequested) {
+      if (!this.queue.cancelRequested && !toDevice) {
         await this.attachArtwork(queued, outputPath);
       }
 
@@ -300,8 +358,9 @@ class DownloadRunner {
         this.queue.markSkipped(id, "Cancelled");
       } else {
         this.queue.markDone(id);
+        if (toDevice) this.queue.patch(id, { deviceFile: path.basename(outputPath) });
         this.current = null;
-        if (typeof this.onLibraryInvalidate === "function") this.onLibraryInvalidate();
+        if (!toDevice && typeof this.onLibraryInvalidate === "function") this.onLibraryInvalidate();
       }
       this.persist();
     } catch (error) {

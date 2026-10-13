@@ -96,7 +96,7 @@ ${iife(
 ${iife("fileNameFromLink, episodeFileName, movieOutputPath, episodeOutputPath", downloadPaths)}
 ${iife("parseSearchResults, parseSearchHtml", searchParse)}
 ${iife("parseTvShowPage, buildTvShowPlan, extractPosterUrl, readShowMeta, dedupeEpisodes, normalizeEpisodeNumbers, guessSeasonHubUrls, guessShowHubUrls, mergeSeasonLists", tvShowParse)}
-${iife("DownloadQueue", downloadQueue)}
+${iife("DownloadQueue, normalizeDestination, destinationLabel, DEVICE_TARGET_HEIGHT", downloadQueue)}
 ${iife("loadQueueState, saveQueueState, defaultStorePath", queueStore)}
 ${iife("downloadHttpFile", httpDl)}
 ${iife("findImpersonateBin, missingTlsMessage", chromeTls)}

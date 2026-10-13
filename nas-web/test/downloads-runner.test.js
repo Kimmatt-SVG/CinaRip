@@ -223,6 +223,39 @@ describe("DownloadRunner", () => {
     assert.equal(fs.existsSync(path.join(videoRoot, "Dune-poster.jpg")), false);
   });
 
+  it("device downloads pick 720p and write outside the library", async () => {
+    let requested;
+    const { runner, dir, videoRoot } = makeRunner({
+      client: {
+        findDirectLink: async (movieUrl, options = {}) => {
+          requested = options;
+          return {
+            ok: true,
+            best: {
+              url: "https://loadshare.org/download/x/720?name=Dune_720.mp4",
+              height: 720,
+              qualityLabel: "720p"
+            }
+          };
+        }
+      }
+    });
+    tmp = dir;
+    runner.deviceRoot = path.join(dir, "device-downloads");
+    runner.enqueue({ movieUrl: MOVIE_URL, title: "Dune", destination: "device" });
+    assert.equal(runner.queue.items[0].destination, "device");
+    runner.start();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const item = runner.queue.items[0];
+    assert.deepEqual(requested, { targetHeight: 720 });
+    assert.equal(item.status, "done");
+    assert.equal(item.qualityLabel, "720p");
+    assert.equal(item.deviceFile, "Dune_720.mp4");
+    assert.ok(fs.existsSync(path.join(runner.deviceRoot, "Dune_720.mp4")));
+    assert.equal(fs.existsSync(path.join(videoRoot, "Dune_720.mp4")), false);
+    assert.equal(fs.existsSync(path.join(videoRoot, "Dune.mp4")), false);
+  });
+
   it("enqueueMany only queues movies from mixed search results", () => {
     const { runner, dir } = makeRunner();
     tmp = dir;

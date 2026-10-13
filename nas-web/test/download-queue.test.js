@@ -27,6 +27,17 @@ describe("download queue", () => {
     assert.equal(queue.items[0].progress, 0);
   });
 
+  it("stores a device destination and can retarget pending items", () => {
+    const queue = new DownloadQueue();
+    queue.add(MOVIE_A, { title: "Dune", destination: "device" });
+    queue.add(MOVIE_B, { title: "Oppenheimer" });
+    assert.equal(queue.items[0].destination, "device");
+    assert.equal(queue.items[1].destination, "nas");
+    const updated = queue.setDestination("device");
+    assert.equal(updated.updated, 2);
+    assert.equal(queue.items[1].destination, "device");
+  });
+
   it("rejects duplicate pending movie urls", () => {
     const queue = new DownloadQueue();
     assert.equal(queue.add(MOVIE_A).ok, true);

@@ -9,7 +9,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="stylesheet" href="/vendor/ysrtv/tv.css" />
-    <link rel="stylesheet" href="/styles.css?v=104" />
+    <link rel="stylesheet" href="/styles.css?v=107" />
     <link rel="preload" href="/sounds/abyssal-starry-sky-slowed.mp3?v=5" as="audio" type="audio/mpeg" />
     <script>
       document.documentElement.classList.toggle(
@@ -171,6 +171,10 @@
           </div>
         </div>
         <div class="queue-run-bar">
+          <div class="queue-destination" role="group" aria-label="Download destination">
+            <button type="button" id="queue-dest-nas" class="ghost queue-dest is-active" data-destination="nas">Server</button>
+            <button type="button" id="queue-dest-device" class="ghost queue-dest" data-destination="device">This device</button>
+          </div>
           <button id="start-download-queue" type="button" class="ghost primary-action">Download</button>
           <button id="stop-download-queue" type="button" class="ghost danger" hidden>Stop Queue</button>
           <button id="clear-download-queue" type="button" class="ghost">Clear Queue</button>
@@ -305,8 +309,8 @@
     <script src="/vendor/anime.min.js"></script>
     <script src="/vendor/powerglitch.min.js"></script>
     <script src="/sounds.js?v=32"></script>
-    <script src="/punished.js?v=22"></script>
-    <script src="/app.js?v=65"></script>
-    <script src="/pin-splash.js?v=7"></script>
+    <script src="/punished.js?v=24"></script>
+    <script src="/app.js?v=68"></script>
+    <script src="/pin-splash.js?v=8"></script>
   </body>
 </html>

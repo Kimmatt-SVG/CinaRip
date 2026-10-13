@@ -1,6 +1,11 @@
 # CinaRip NAS library + Tornado HTTP downloader for ASUSTOR AS1102T.
 # Host networking: Docker bridge on this NAS cannot reach Tornado (TCP timeout).
 # Open at https://cinarip.matthewsuess.com (reverse proxy). Local bind is still :8787.
+#
+# The Aug 31 docker-compose.yml on the NAS does not inject APP_PIN. Copy THIS
+# file over it (same folder as .env), then recreate — restart is not enough:
+#   sudo docker compose up -d --force-recreate
+# Service name: cinarip.
 services:
   cinarip:
     build: .
@@ -11,6 +16,8 @@ services:
     network_mode: host
     mem_limit: 256m
     memswap_limit: 256m
+    env_file:
+      - .env
     environment:
       PORT: "8787"
       VIDEO_ROOT: /data/videos

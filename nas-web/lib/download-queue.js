@@ -14,6 +14,22 @@ function normalizePageUrl(url) {
 }
 
 const ACTIVE_EPISODE_STATUSES = new Set(["pending", "loading", "downloading"]);
+const DEVICE_TARGET_HEIGHT = 720;
+
+function normalizeDestination(value) {
+  return String(value || "").trim().toLowerCase() === "device" ? "device" : "nas";
+}
+
+function destinationLabel(destination) {
+  return normalizeDestination(destination) === "device" ? "This device" : "Server";
+}
+
+function safeDeviceFileName(value) {
+  return String(value || "")
+    .replace(/^.*[\\/]/, "")
+    .replace(/[<>:"|?*]+/g, "_")
+    .trim();
+}
 
 function episodeQueueKey(showTitle, season, episode) {
   const show = String(showTitle || "")
@@ -49,14 +65,15 @@ function sanitizeQueueItem(raw = {}) {
     kind,
     title: String(raw.title || (kind === "episode" ? "Episode" : titleFromMovieUrl(movieUrl))).trim() || "Queued item",
     movieUrl,
-    destination: "nas",
+    destination: normalizeDestination(raw.destination),
     status,
     error: raw.error ? String(raw.error) : null,
     passRetries: Number(raw.passRetries) || 0,
     addedAt: Number(raw.addedAt) || Date.now(),
     progress: Number(raw.progress) || 0,
     qualityLabel: raw.qualityLabel ? String(raw.qualityLabel) : "",
-    posterUrl: raw.posterUrl || null
+    posterUrl: raw.posterUrl || null,
+    deviceFile: safeDeviceFileName(raw.deviceFile)
   };
 
   if (kind === "episode") {
@@ -122,14 +139,15 @@ class DownloadQueue {
       kind: "movie",
       title: options.title || titleFromMovieUrl(normalizedUrl),
       movieUrl: normalizedUrl,
-      destination: "nas",
+      destination: normalizeDestination(options.destination),
       status: "pending",
       error: null,
       passRetries: 0,
       addedAt: Date.now(),
       progress: 0,
       qualityLabel: "",
-      posterUrl: options.posterUrl || null
+      posterUrl: options.posterUrl || null,
+      deviceFile: ""
     };
 
     this.items.push(item);
@@ -163,13 +181,14 @@ class DownloadQueue {
       episode: episodeNumber,
       episodeTitle,
       posterUrl: options.posterUrl || episode.posterUrl || null,
-      destination: "nas",
+      destination: normalizeDestination(options.destination || episode.destination),
       status: "pending",
       error: null,
       passRetries: 0,
       addedAt: Date.now(),
       progress: 0,
-      qualityLabel: ""
+      qualityLabel: "",
+      deviceFile: ""
     };
 
     this.items.push(item);
@@ -189,20 +208,34 @@ class DownloadQueue {
     return { ok: true, added, skipped };
   }
 
-  addMany(entries = []) {
+  addMany(entries = [], options = {}) {
     const added = [];
     const skipped = [];
+    const fallback = normalizeDestination(options.destination);
 
     for (const entry of entries) {
       const movieUrl = typeof entry === "string" ? entry : entry?.movieUrl;
       const title = typeof entry === "object" ? entry?.title : null;
       const posterUrl = typeof entry === "object" ? entry?.posterUrl : null;
-      const result = this.add(movieUrl, { title, posterUrl });
+      const destination =
+        typeof entry === "object" ? normalizeDestination(entry.destination || fallback) : fallback;
+      const result = this.add(movieUrl, { title, posterUrl, destination });
       if (result.ok) added.push(result.item);
       else skipped.push({ movieUrl, error: result.error });
     }
 
     return { ok: true, added, skipped };
+  }
+
+  setDestination(destination) {
+    const dest = normalizeDestination(destination);
+    let updated = 0;
+    for (const item of this.items) {
+      if (item.status !== "pending" && item.status !== "failed") continue;
+      item.destination = dest;
+      updated += 1;
+    }
+    return { ok: true, destination: dest, updated };
   }
 
   remove(id) {
@@ -380,5 +413,8 @@ module.exports = {
   normalizeMovieUrl,
   canonicalMoviePageUrl,
   extractMovieIdFromUrl,
-  episodeQueueKey
+  episodeQueueKey,
+  normalizeDestination,
+  destinationLabel,
+  DEVICE_TARGET_HEIGHT
 };

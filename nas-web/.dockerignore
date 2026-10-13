@@ -1,3 +1,6 @@
 node_modules
 *.md
 .git
+.env
+.env.*
+!.env.example

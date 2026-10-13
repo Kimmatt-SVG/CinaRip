@@ -22,6 +22,8 @@ RUN apt-get update \
   && rm /tmp/ci.tgz \
   && rm -rf /var/lib/apt/lists/*
 
+# Bundled Node server (PIN session routes live here, not in a separate lib/ copy).
+# Do not COPY .env — PIN is runtime env from compose (env_file + /app/.env mount).
 COPY server.js ./
 COPY public ./public
 

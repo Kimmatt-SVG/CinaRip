@@ -84,6 +84,8 @@ const queueBar = document.getElementById("queue-bar");
 const startDownloadQueueButton = document.getElementById("start-download-queue");
 const stopDownloadQueueButton = document.getElementById("stop-download-queue");
 const clearDownloadQueueButton = document.getElementById("clear-download-queue");
+const queueDestNasButton = document.getElementById("queue-dest-nas");
+const queueDestDeviceButton = document.getElementById("queue-dest-device");
 
 let library = { movies: [], shows: [] };
 let jiggleMode = false;
@@ -99,6 +101,7 @@ let realQueueSnapshot = { items: [], counts: {}, running: false };
 let lastDoneCount = 0;
 let lastQueueRunning = null;
 const heardFailedIds = new Set();
+const heardDeviceIds = new Set();
 let playedQueueFinish = false;
 const CURSED_GRAVEYARD_SIZE = 6;
 const CURSED_GRAVEYARD_MIN = 4;
@@ -1657,7 +1660,8 @@ async function queueSelectedCatalog() {
       const result = await postJson("/api/downloads", {
         episodes: tvShowPlan.episodes,
         showTitle: tvShowPlan.showTitle,
-        posterUrl: tvShowPlan.posterUrl || selectedCatalogMovie.posterUrl
+        posterUrl: tvShowPlan.posterUrl || selectedCatalogMovie.posterUrl,
+        destination: currentQueueDestination()
       });
       const added = result.added?.length || 0;
       if (catalogDetailStatus) {
@@ -1674,7 +1678,8 @@ async function queueSelectedCatalog() {
     await postJson("/api/downloads", {
       movieUrl: selectedCatalogMovie.movieUrl,
       title: selectedCatalogMovie.title,
-      posterUrl: selectedCatalogMovie.posterUrl
+      posterUrl: selectedCatalogMovie.posterUrl,
+      destination: currentQueueDestination()
     });
     if (catalogDetailStatus) catalogDetailStatus.textContent = "Added to download queue.";
     await refreshJobs();
@@ -2426,12 +2431,37 @@ function queueStatusLabel(item) {
     case "downloading":
       return item.progress ? `Downloading ${item.progress}%` : "Downloading";
     case "done":
-      return "Done";
+      return item?.destination === "device" ? "Ready to save" : "Done";
     case "failed":
       return "Failed";
     default:
       return item?.passRetries ? "Retry" : "Pending";
   }
+}
+
+function currentQueueDestination() {
+  return queueDestDeviceButton?.classList.contains("is-active") ? "device" : "nas";
+}
+
+function queueDestinationLabel(destination) {
+  return destination === "device" ? "This device · 720p" : "Server";
+}
+
+function syncQueueDestinationButtons(destination) {
+  const dest = destination === "device" ? "device" : "nas";
+  queueDestNasButton?.classList.toggle("is-active", dest === "nas");
+  queueDestDeviceButton?.classList.toggle("is-active", dest === "device");
+}
+
+function triggerDeviceFileDownload(item) {
+  if (!item?.id || item.destination !== "device" || item.status !== "done") return;
+  const link = document.createElement("a");
+  link.href = `/api/downloads/device/${encodeURIComponent(item.id)}`;
+  link.download = item.deviceFile || `${item.title || "movie"}.mp4`;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function formatQueueSummary(snapshot) {
@@ -2525,7 +2555,7 @@ function fillQueueRow(row, item, snapshot) {
   } else if (meta.parentElement !== rowMeta) {
     rowMeta.appendChild(meta);
   }
-  meta.textContent = `${item.kind === "episode" ? "TV" : "Movie"} · NAS`;
+  meta.textContent = `${item.kind === "episode" ? "TV" : "Movie"} · ${queueDestinationLabel(item.destination)}`;
 
   let error = row.querySelector(".download-queue-item-error");
   if (item.status === "failed" && item.error) {
@@ -2589,7 +2619,10 @@ function renderDownloadQueue(snapshot) {
     downloadQueueList.innerHTML = "";
     const empty = document.createElement("li");
     empty.className = "download-queue-empty";
-    empty.textContent = "Add titles, then click Download. Files are saved to the NAS.";
+    empty.textContent =
+      currentQueueDestination() === "device"
+        ? "Add titles, then click Download. 720p files will save to this device."
+        : "Add titles, then click Download. Files are saved to the NAS.";
     downloadQueueList.appendChild(empty);
     seenQueueIds.clear();
     return;
@@ -2719,7 +2752,7 @@ async function refreshJobs() {
   const data = await getJson("/api/downloads");
   realQueueSnapshot = data;
   const items = data.items || [];
-  const doneCount = items.filter((item) => item.status === "done").length;
+  const doneCount = items.filter((item) => item.status === "done" && item.destination !== "device").length;
   if (doneCount > lastDoneCount) refreshLibrary().catch(() => {});
   lastDoneCount = doneCount;
 
@@ -2736,6 +2769,11 @@ async function refreshJobs() {
     if (item.status !== "failed" || heardFailedIds.has(item.id)) continue;
     heardFailedIds.add(item.id);
     if (wasRunning !== null) window.CinaRipAudio?.error();
+  }
+  for (const item of items) {
+    if (item.destination !== "device" || item.status !== "done" || heardDeviceIds.has(item.id)) continue;
+    heardDeviceIds.add(item.id);
+    triggerDeviceFileDownload(item);
   }
 
   const running = Boolean(data.running);
@@ -2936,7 +2974,7 @@ async function refreshAccount() {
       if (accountLabel) accountLabel.textContent = "Server not updated";
       setAccountError(
         noteError(
-          "The website loaded, but Docker is still running the old server.js. Overwrite Public/cinarip/server.js from this PC, then run: sudo docker restart cinarip"
+          "The website loaded, but Docker is still running the old server.js. Overwrite Public/cinarip/server.js (not only public/) from this PC, then from that folder run: sudo docker compose up -d --build --force-recreate"
         )
       );
     } else {
@@ -3099,7 +3137,10 @@ document.getElementById("catalog-queue-all").addEventListener("click", async () 
     return;
   }
   try {
-    const result = await postJson("/api/downloads", { movies: searchResults });
+    const result = await postJson("/api/downloads", {
+      movies: searchResults,
+      destination: currentQueueDestination()
+    });
     const added = result.added?.length || 0;
     searchStatus.textContent = `Added ${added} movie${added === 1 ? "" : "s"} to queue`;
     await refreshJobs();
@@ -3127,13 +3168,39 @@ catalogTvEpisodeSelect.addEventListener("change", () => {
   }
 });
 
+async function applyQueueDestination(destination) {
+  syncQueueDestinationButtons(destination);
+  const empty = downloadQueueList?.querySelector(".download-queue-empty");
+  if (empty) {
+    empty.textContent =
+      destination === "device"
+        ? "Add titles, then click Download. 720p files will save to this device."
+        : "Add titles, then click Download. Files are saved to the NAS.";
+  }
+  try {
+    await postJson("/api/downloads/destination", { destination });
+    await refreshJobs();
+  } catch (error) {
+    if (searchStatus) searchStatus.textContent = noteError(error.message || "Could not set download destination.");
+  }
+}
+
+queueDestNasButton?.addEventListener("click", () => {
+  applyQueueDestination("nas");
+});
+queueDestDeviceButton?.addEventListener("click", () => {
+  applyQueueDestination("device");
+});
+
 startDownloadQueueButton.addEventListener("click", async () => {
   if (isPunishedMode()) {
     startCursedQueue().catch(() => {});
     return;
   }
   try {
-    const result = await postJson("/api/downloads/start");
+    const result = await postJson("/api/downloads/start", {
+      destination: currentQueueDestination()
+    });
     if (!result.ok) searchStatus.textContent = noteError(result.error || "Could not start the queue.");
     await refreshJobs();
   } catch (error) {

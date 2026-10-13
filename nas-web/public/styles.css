@@ -1431,6 +1431,35 @@ body > #library-delete-veil.library-delete-veil[hidden] {
   flex-wrap: wrap;
   gap: 8px;
   margin: 10px 0 12px;
+  align-items: center;
+}
+
+.queue-destination {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.queue-dest {
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  min-width: 108px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.queue-dest.is-active {
+  background: linear-gradient(90deg, #0a84ff, #5e5ce6);
+  color: #fff;
+}
+
+.queue-dest + .queue-dest {
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .ghost.primary-action {

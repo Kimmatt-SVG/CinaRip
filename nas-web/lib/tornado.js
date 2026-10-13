@@ -611,6 +611,26 @@ function qualityLabel(height) {
   return "direct";
 }
 
+function pickBestLink(ranked = [], options = {}) {
+  const list = (Array.isArray(ranked) ? ranked : []).filter((link) => link && link.url);
+  if (!list.length) return null;
+
+  const sorted = [...list].sort((a, b) => Number(b.height || 0) - Number(a.height || 0));
+  const targetHeight = Number(options.targetHeight) || 0;
+  if (!targetHeight) return sorted[0];
+
+  const exact = sorted.find((link) => Number(link.height) === targetHeight);
+  if (exact) return exact;
+
+  const below = sorted.filter((link) => Number(link.height) > 0 && Number(link.height) < targetHeight);
+  if (below[0]) return below[0];
+
+  const above = [...sorted]
+    .filter((link) => Number(link.height) > targetHeight)
+    .sort((a, b) => Number(a.height) - Number(b.height));
+  return above[0] || sorted[0];
+}
+
 function isLoadshareDownloadUrl(url) {
   return Boolean(url && LOADSHARE_PATH.test(url));
 }
@@ -1211,7 +1231,8 @@ class TornadoClient {
     };
   }
 
-  async findDirectLink(movieUrl) {
+  async findDirectLink(movieUrl, options = {}) {
+    const targetHeight = Number(options.targetHeight) || 0;
     const canonical =
       canonicalMovieUrl(movieUrl) || canonicalContentUrl(movieUrl) || String(movieUrl || "").trim();
     if (!canonical) {
@@ -1368,7 +1389,9 @@ class TornadoClient {
             if (nestedClean && isLoadshareDownloadUrl(nestedClean)) continue;
             await ingest(nested, acceptForApiPath(nested));
           }
-          if ([...links].some((url) => parseQuality(url) >= 1080)) break outer;
+          const foundHeights = [...links].map((url) => parseQuality(url));
+          if (targetHeight && foundHeights.includes(targetHeight)) break outer;
+          if (!targetHeight && foundHeights.some((height) => height >= 1080)) break outer;
         }
       }
     }
@@ -1400,7 +1423,7 @@ class TornadoClient {
       };
     }
 
-    const best = ranked[0];
+    const best = pickBestLink(ranked, { targetHeight }) || ranked[0];
     return {
       ok: true,
       movieUrl: canonical,
@@ -1417,6 +1440,7 @@ module.exports = {
   canonicalMovieUrl,
   fileNameFromLink,
   qualityLabel,
+  pickBestLink,
   parseSearchHtml,
   parseSearchResults,
   parseTvShowPage,
