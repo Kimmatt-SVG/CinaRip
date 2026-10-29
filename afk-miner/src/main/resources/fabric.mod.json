@@ -1,0 +1,25 @@
+{
+	"schemaVersion": 1,
+	"id": "afkminer",
+	"version": "${version}",
+	"name": "AFK Miner",
+	"description": "Client-side pit miner for the character already playing in this Minecraft window. Marks a rectangle, mines it, and empties into a chest.",
+	"authors": ["Matthew Suess"],
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["dev.suess.afkminer.client.AfkMinerClient"]
+	},
+	"mixins": [
+		{
+			"config": "afkminer.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
