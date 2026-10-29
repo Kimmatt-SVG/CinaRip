@@ -1,0 +1,11 @@
+{
+	"required": true,
+	"package": "dev.suess.afkminer.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"LocalPlayerInputMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
